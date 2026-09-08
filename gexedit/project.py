@@ -50,7 +50,7 @@ def scan_labels(root):
             pending = None
             with open(path, errors="replace") as f:
                 for line in f:
-                    m = re.match(r"^([A-Za-z_][\w]*):", line)
+                    m = re.match(r"^\.?([A-Za-z_][\w]*):", line)
                     if m:
                         pending = m.group(1)
                         continue
@@ -63,10 +63,16 @@ def scan_labels(root):
 
 
 def resolve(root, incpath):
-    """Turn an INCBIN path into a real file, preferring an editable source.
+    """Turn an INCBIN/INCLUDE path into the file that is actually the source of truth.
 
-    A path under .gfx/ is a build artifact rgbgfx makes from a PNG; the editor wants
-    the PNG, since that is what a person can actually change.
+    Two indirections matter:
+
+    * A path under .gfx/ is a build artifact rgbgfx makes from a PNG. The editor wants
+      the PNG, because that is the file a person can change.
+    * An INCLUDEd .asm with a same-stem .bin beside it is a GENERATED view of that .bin
+      (see render_map_asm.py in either disassembly). The .bin holds the bytes; the .asm
+      is regenerated from it by `make maps-docs`. So the editor edits the .bin and never
+      the .asm - writing the .asm would be overwritten by the next build.
     """
     if incpath.startswith(".gfx/"):
         png = os.path.join(root, "src", "gfx", incpath[len(".gfx/"):])
@@ -74,6 +80,10 @@ def resolve(root, incpath):
         if os.path.exists(png):
             return png
     direct = os.path.join(root, "src", incpath)
+    if direct.endswith(".asm"):
+        binary = direct[:-4] + ".bin"
+        if os.path.exists(binary):
+            return binary
     return direct
 
 
@@ -117,6 +127,44 @@ class Project:
                 self.record_schema = json.load(f)
         self.labels = scan_labels(self.root)
         self.maps = self._load_maps()
+
+    @property
+    def enums(self):
+        """name -> {value: CONSTANT}, scraped the way render_map_asm.py scrapes them.
+
+        The schema names each enum by the span of DEF lines it occupies in
+        constants.asm, because those files reuse a prefix like ENTITY_ for several
+        unrelated enums whose values would otherwise collide.
+        """
+        if getattr(self, "_enums", None) is not None:
+            return self._enums
+        out = {}
+        schema = self.record_schema or {}
+        path = os.path.join(self.root, "src", "constants", "constants.asm")
+        if os.path.exists(path):
+            with open(path, errors="replace") as f:
+                lines = f.read().splitlines()
+            pat = re.compile(r"^DEF\s+([A-Z0-9_]+)\s+EQU\s+\$([0-9a-fA-F]+)")
+            for name, spec in schema.get("enums", {}).items():
+                start = end = None
+                for i, ln in enumerate(lines):
+                    m = pat.match(ln)
+                    if not m:
+                        continue
+                    if m.group(1) == spec["from"]:
+                        start = i
+                    if m.group(1) == spec["to"]:
+                        end = i
+                if start is None or end is None or end < start:
+                    continue
+                table = {}
+                for ln in lines[start:end + 1]:
+                    m = pat.match(ln)
+                    if m:
+                        table.setdefault(int(m.group(2), 16), m.group(1))
+                out[name] = table
+        self._enums = out
+        return out
 
     # -- which game is this? ----------------------------------------------
     def _pick_profile(self, game=None):
@@ -237,8 +285,77 @@ class Project:
                 png = os.path.splitext(layers["tileset"])[0] + ".png"
                 if os.path.exists(png):
                     layers["tileset_png"] = png
+            doors = self._table_asset("doors", ident)
+            if doors:
+                layers["doors"] = doors
             maps.append(MapInfo(ident, mapname, level, w, h, layers))
         return maps
+
+    def _table_asset(self, role, index):
+        table = self._pointer_tables().get(role)
+        if not table or index >= len(table):
+            return None
+        return table[index]
+
+    def _level_asset(self, level_id, prefix):
+        """gex2's per-level lists, found through the pointer tables that index them.
+
+        Every one of those tables is `dw <label>` in level order, so entry N of the
+        entity-list table names level N's list - which beats guessing a filename from
+        the level's name, and follows a repointing the way everything else here does.
+        """
+        return self._table_asset(prefix, level_id)
+
+    def _pointer_tables(self):
+        """role -> [file per level], scraped from the `dw` tables in src/code.
+
+        A run of `dw <label>` lines is taken to be a per-level pointer table when every
+        label in it resolves to a file whose name starts with the same known prefix.
+        Going by the resolved FILE rather than the label's spelling is what makes this
+        survive gex2 calling a table entry `.data_0b_5030_Doors_MediaDimension` while
+        the file beside it is `doors_media_dimension.bin`.
+        """
+        if getattr(self, "_ptr_cache", None) is not None:
+            return self._ptr_cache
+        # matched as substrings of the file name, which covers gex2's
+        # entity_list_out_of_toon.bin and gex3's GexCave_entity_list.bin alike
+        wanted = ("entity_list", "collectible_list", "doors", "spawns")
+        found = {}
+
+        def consider(run):
+            # a null entry ($0000) means "this map has none", and must keep its slot
+            real = [lbl for lbl in run if lbl is not None]
+            if len(real) <= 4:
+                return
+            paths = [self.labels.get(lbl) if lbl else None for lbl in run]
+            if not all(paths[i] for i, lbl in enumerate(run) if lbl):
+                return
+            names = [os.path.basename(q) for q in paths if q]
+            for role in wanted:
+                if role in found:
+                    continue
+                if all(role in n for n in names):
+                    found[role] = [resolve(self.root, q) if q else None for q in paths]
+
+        for dirpath, _dirs, files in os.walk(os.path.join(self.root, "src", "code")):
+            for fn in sorted(files):
+                if not fn.endswith(".asm"):
+                    continue
+                with open(os.path.join(dirpath, fn), errors="replace") as f:
+                    run = []
+                    for line in f:
+                        m = re.match(r"\s+dw\s+\.?([A-Za-z_]\w*)\s*(?:;.*)?$", line)
+                        if m:
+                            run.append(m.group(1))
+                            continue
+                        if re.match(r"\s+dw\s+\$0+\s*(?:;.*)?$", line):
+                            run.append(None)
+                            continue
+                        consider(run)
+                        run = []
+                    consider(run)
+        self._ptr_cache = found
+        return found
 
     def _load_gex2(self):
         man = self.profile["manifest"]
@@ -281,6 +398,13 @@ class Project:
                     if os.path.exists(p):
                         layers[role] = p
                 layers.setdefault("channel", channel)
+            # gex2's object lists are per level and named after the level, not the
+            # channel, and nothing in the MapData record points at them - so find them
+            # by the label the code INCLUDEs, which is keyed on the level name
+            for role in ("entity_list", "collectible_list", "doors"):
+                inc = self._level_asset(ident, role)
+                if inc:
+                    layers[role] = inc
             maps.append(MapInfo(ident, mapname, None, geo["width"], geo["height"],
                                 layers, {"alt_mask": altmask}))
         return maps

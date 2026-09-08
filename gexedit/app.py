@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from . import formats
+from . import formats, objects
 from .project import Project, ProjectError
 from .render import MapView
 
@@ -31,6 +31,8 @@ class Document:
         self.project = project
         self.info = info
         self.view = MapView(project, info)
+        self.objects = objects.layers_for(project, info)
+        self.visible = {role: True for role in self.objects}
         self.undo = []
         self.redo = []
         self.dirty = False
@@ -47,6 +49,28 @@ class Document:
         stroke.append((cx, cy, old, block_id))
         self.dirty = True
         return True
+
+    def flood_fill(self, cx, cy, block_id, stroke):
+        """Replace the contiguous run of identical blocks reachable from a cell."""
+        target = self.view.block_at(cx, cy)
+        if target == block_id:
+            return
+        w, h = self.info.width, self.info.height
+        seen = {(cx, cy)}
+        queue = [(cx, cy)]
+        while queue:
+            x, y = queue.pop()
+            self.set_block(x, y, block_id, stroke)
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in seen \
+                        and self.view.block_at(nx, ny) == target:
+                    seen.add((nx, ny))
+                    queue.append((nx, ny))
+
+    def fill_rect(self, x0, y0, x1, y1, block_id, stroke):
+        for y in range(min(y0, y1), max(y0, y1) + 1):
+            for x in range(min(x0, x1), max(x0, x1) + 1):
+                self.set_block(x, y, block_id, stroke)
 
     def commit(self, stroke):
         if stroke:
@@ -74,6 +98,10 @@ class Document:
         self.undo.append(stroke)
         return True
 
+    @property
+    def any_dirty(self):
+        return self.dirty or any(l.dirty for l in self.objects.values())
+
     def save(self):
         """Write the blockmap back in whatever shape this game stores it."""
         prof = self.project.profile
@@ -93,6 +121,9 @@ class Document:
             with open(path, "wb") as f:
                 f.write(formats.serialize_blockmap8(self.view.cells_map))
             written = [path]
+        for layer in self.objects.values():
+            if layer.dirty:
+                written.append(layer.save())
         self.dirty = False
         return written
 
@@ -108,6 +139,10 @@ class EditorWindow(ttk.Frame):
         self.show_collision = False
         self.selected_block = 0
         self.stroke = None
+        self.tool = "paint"
+        self.rect_from = None
+        self.selection = None          # (role, Record)
+        self.drag_from = None
         self.hover = None
         self._needs_fit = False
         self._photo = None
@@ -155,6 +190,18 @@ class EditorWindow(ttk.Frame):
                                 padding=(6, 2))
         self.status.pack(side="bottom", fill="x")
 
+        bar = ttk.Frame(self, padding=(6, 4))
+        bar.pack(side="top", fill="x")
+        ttk.Label(bar, text="Tool:").pack(side="left")
+        self.tool_var = tk.StringVar(value="paint")
+        for label, value in (("Paint", "paint"), ("Fill", "fill"),
+                             ("Rect", "rect"), ("Objects", "objects")):
+            ttk.Radiobutton(bar, text=label, value=value, variable=self.tool_var,
+                            command=self._on_tool).pack(side="left", padx=(4, 8))
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
+        self.layer_bar = ttk.Frame(bar)
+        self.layer_bar.pack(side="left")
+
         panes = ttk.PanedWindow(self, orient="horizontal")
         panes.pack(fill="both", expand=True)
 
@@ -183,7 +230,7 @@ class EditorWindow(ttk.Frame):
         panes.add(mid, weight=1)
 
         # right: the blockset
-        right = ttk.Frame(panes, width=PALETTE_COLS * PALETTE_CELL + 30)
+        right = ttk.Frame(panes, width=PALETTE_COLS * PALETTE_CELL + 90)
         self.palette_label = ttk.Label(right, text="Blocks", padding=(6, 4))
         self.palette_label.pack(anchor="w")
         pal_wrap = ttk.Frame(right)
@@ -195,6 +242,12 @@ class EditorWindow(ttk.Frame):
         self.palette.pack(side="left", fill="both", expand=True)
         psb.pack(side="right", fill="y")
         self.palette.bind("<Button-1>", self._on_palette_click)
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=(6, 0))
+        self.props_title = ttk.Label(right, text="No object selected", padding=(6, 4))
+        self.props_title.pack(anchor="w")
+        self.props = ttk.Frame(right, padding=(6, 0))
+        self.props.pack(fill="x")
+        self._prop_vars = {}
         panes.add(right, weight=0)
 
         self.canvas.bind("<Configure>", self._on_configure)
@@ -227,6 +280,8 @@ class EditorWindow(ttk.Frame):
         r.bind("g", lambda e: self.toggle_grid())
         r.bind("c", lambda e: self.toggle_collision())
         r.bind("f", lambda e: self.fit())
+        for key, tool in (("1", "paint"), ("2", "fill"), ("3", "rect"), ("4", "objects")):
+            r.bind(key, lambda e, t=tool: self._set_tool(t))
 
     # --------------------------------------------------------------- state
     @property
@@ -236,6 +291,16 @@ class EditorWindow(ttk.Frame):
     @property
     def cell_px(self):
         return max(1, int(self.project.block_px * self.scale))
+
+    @property
+    def px_scale(self):
+        """View pixels per world pixel.
+
+        Object positions are world pixels while the map is drawn in cells, so this is
+        the one conversion between them. It is cell_px / block_px and NOT that times
+        the zoom - the zoom is already inside cell_px.
+        """
+        return self.cell_px / self.project.block_px
 
     def populate_maps(self):
         self.tree.delete(*self.tree.get_children())
@@ -263,6 +328,9 @@ class EditorWindow(ttk.Frame):
         self.draw_palette()
         # the canvas has no real size until Tk has laid it out, so a fit now would
         # always land on the smallest zoom; do it on the first Configure instead
+        self.selection = None
+        self._rebuild_layer_toggles()
+        self._refresh_props()
         self._needs_fit = True
         self._update_scrollregion()
         self.redraw()
@@ -279,7 +347,7 @@ class EditorWindow(ttk.Frame):
     def _title(self):
         bits = [self.project.profile.get("title", self.project.game)]
         if self.doc:
-            bits.append(self.doc.name + ("*" if self.doc.dirty else ""))
+            bits.append(self.doc.name + ("*" if self.doc.any_dirty else ""))
         self.master.title("gexedit - " + " - ".join(bits))
 
     # -------------------------------------------------------------- canvas
@@ -331,7 +399,72 @@ class EditorWindow(ttk.Frame):
         self.canvas.delete("map")
         self.canvas.create_image(cx0 * cp, cy0 * cp, image=self._photo,
                                  anchor="nw", tags="map")
+        self._draw_objects()
         self._draw_hover()
+
+    MARKER = 5
+
+    def _draw_objects(self):
+        """Markers for every visible object layer, in map pixels scaled to the view.
+
+        Object positions are world coordinates, not cells, so they land wherever they
+        actually are rather than snapping to the block grid.
+        """
+        self.canvas.delete("obj")
+        if not self.doc:
+            return
+        px_scale = self.px_scale
+        for role, layer in self.doc.objects.items():
+            if not self.doc.visible.get(role, True):
+                continue
+            colour = layer.editor.get("colour", "#ffffff")
+            for rec in layer.on_map(self.doc.info.id):
+                wx, wy = layer.world_xy(rec)
+                x, y = wx * px_scale, wy * px_scale
+                link = layer.link_xy(rec)
+                if link:
+                    self.canvas.create_line(x, y, link[0] * px_scale,
+                                            link[1] * px_scale, fill=colour,
+                                            dash=(3, 3), tags="obj")
+                r = self.MARKER
+                sel = self.selection == (role, rec)
+                self.canvas.create_rectangle(x - r, y - r, x + r, y + r,
+                                             outline="#000000", fill=colour,
+                                             width=3 if sel else 1, tags="obj")
+                if sel:
+                    self.canvas.create_rectangle(x - r - 4, y - r - 4, x + r + 4,
+                                                 y + r + 4, outline="#ffffff",
+                                                 tags="obj")
+
+    def _draw_rect_preview(self, cell):
+        self.canvas.delete("rect")
+        if not (cell and self.rect_from):
+            return
+        cp = self.cell_px
+        x0 = min(self.rect_from[0], cell[0]) * cp
+        y0 = min(self.rect_from[1], cell[1]) * cp
+        x1 = (max(self.rect_from[0], cell[0]) + 1) * cp
+        y1 = (max(self.rect_from[1], cell[1]) + 1) * cp
+        self.canvas.create_rectangle(x0, y0, x1, y1, outline="#ffcc33",
+                                     width=2, dash=(4, 3), tags="rect")
+
+    def _object_at(self, event):
+        """The topmost object marker near the pointer, or None."""
+        if not self.doc:
+            return None
+        px_scale = self.px_scale
+        mx = self.canvas.canvasx(event.x)
+        my = self.canvas.canvasy(event.y)
+        best, best_d = None, (self.MARKER + 4) ** 2
+        for role, layer in self.doc.objects.items():
+            if not self.doc.visible.get(role, True):
+                continue
+            for rec in layer.on_map(self.doc.info.id):
+                wx, wy = layer.world_xy(rec)
+                d = (wx * px_scale - mx) ** 2 + (wy * px_scale - my) ** 2
+                if d <= best_d:
+                    best, best_d = (role, rec), d
+        return best
 
     def _draw_hover(self):
         self.canvas.delete("hover")
@@ -364,22 +497,72 @@ class EditorWindow(ttk.Frame):
         self._set_hover(self._cell_at(event))
 
     def _on_press(self, event):
+        if self.tool == "objects":
+            hit = self._object_at(event)
+            self.select_object(hit)
+            if hit:
+                px_scale = self.px_scale
+                wx, wy = self.doc.objects[hit[0]].world_xy(hit[1])
+                self.drag_from = (self.canvas.canvasx(event.x) - wx * px_scale,
+                                  self.canvas.canvasy(event.y) - wy * px_scale)
+            return
         cell = self._cell_at(event)
         if not cell:
             return
+        if self.tool == "rect":
+            self.rect_from = cell
+            return
         self.stroke = []
+        if self.tool == "fill":
+            self.doc.flood_fill(cell[0], cell[1], self.selected_block, self.stroke)
+            self.doc.commit(self.stroke)
+            self.stroke = None
+            self.redraw()
+            self._title()
+            return
         if self.doc.set_block(cell[0], cell[1], self.selected_block, self.stroke):
             self.redraw()
             self._title()
 
     def _on_drag(self, event):
+        if self.tool == "objects":
+            if self.selection and self.drag_from:
+                role, rec = self.selection
+                layer = self.doc.objects[role]
+                px_scale = self.px_scale
+                wx = (self.canvas.canvasx(event.x) - self.drag_from[0]) / px_scale
+                wy = (self.canvas.canvasy(event.y) - self.drag_from[1]) / px_scale
+                layer.set_world_xy(rec, wx, wy)
+                self._refresh_props()
+                self._draw_objects()
+                self._title()
+            return
         cell = self._cell_at(event)
         self._set_hover(cell)
+        if self.tool == "rect":
+            self._draw_rect_preview(cell)
+            return
         if cell and self.stroke is not None:
             if self.doc.set_block(cell[0], cell[1], self.selected_block, self.stroke):
                 self.redraw()
 
     def _on_release(self, event):
+        if self.tool == "objects":
+            self.drag_from = None
+            return
+        if self.tool == "rect":
+            cell = self._cell_at(event)
+            self.canvas.delete("rect")
+            if cell and self.rect_from:
+                self.stroke = []
+                self.doc.fill_rect(self.rect_from[0], self.rect_from[1],
+                                   cell[0], cell[1], self.selected_block, self.stroke)
+                self.doc.commit(self.stroke)
+                self.stroke = None
+                self.redraw()
+                self._title()
+            self.rect_from = None
+            return
         if self.stroke is not None:
             self.doc.commit(self.stroke)
             self.stroke = None
@@ -512,6 +695,116 @@ class EditorWindow(ttk.Frame):
         if project.maps:
             self.open_map(project.maps[0])
 
+    # ---------------------------------------------------------------- objects
+    def _set_tool(self, tool):
+        self.tool_var.set(tool)
+        self._on_tool()
+
+    def _on_tool(self):
+        self.tool = self.tool_var.get()
+        if self.tool != "objects":
+            self.select_object(None)
+        self._status()
+
+    def _rebuild_layer_toggles(self):
+        for child in self.layer_bar.winfo_children():
+            child.destroy()
+        self._layer_vars = {}
+        if not self.doc:
+            return
+        for role, layer in sorted(self.doc.objects.items()):
+            var = tk.BooleanVar(value=self.doc.visible.get(role, True))
+            self._layer_vars[role] = var
+            label = "%s (%d)" % (role.replace("_list", "").replace("_", " "),
+                                 len(layer.on_map(self.doc.info.id)))
+            ttk.Checkbutton(self.layer_bar, text=label, variable=var,
+                            command=lambda r=role: self._toggle_layer(r)
+                            ).pack(side="left", padx=(0, 8))
+
+    def _toggle_layer(self, role):
+        self.doc.visible[role] = self._layer_vars[role].get()
+        self._draw_objects()
+
+    def select_object(self, hit):
+        self.selection = hit
+        self._refresh_props()
+        self._draw_objects()
+        self._status()
+
+    def _refresh_props(self):
+        """The properties panel is generated from the schema, not hand-built.
+
+        Every field the disassembly documents gets a row, in record order, with enum
+        fields showing their constant. Nothing here lists a field by name.
+        """
+        for child in self.props.winfo_children():
+            child.destroy()
+        self._prop_vars = {}
+        if not self.selection:
+            self.props_title.configure(text="No object selected")
+            return
+        role, rec = self.selection
+        layer = self.doc.objects[role]
+        self.props_title.configure(
+            text="%s  #%d  -  %s" % (role.replace("_list", ""), rec.index,
+                                     layer.label(rec, self.project.enums)))
+        enums = self.project.enums
+        for row, field in enumerate(layer.fields):
+            name = field["name"]
+            ttk.Label(self.props, text=name).grid(row=row, column=0, sticky="w",
+                                                  padx=(0, 6), pady=1)
+            value = rec.get(name, 0)
+            table = enums.get(field.get("enum"))
+            var = tk.StringVar()
+            self._prop_vars[name] = var
+
+            if table:
+                # a field the disassembly gave an enum gets the constants themselves,
+                # which beats a number the reader has to look up - and it is generated,
+                # so a constant added to the .asm shows up here with no change in here
+                choices = ["$%02x  %s" % (v, n) for v, n in sorted(table.items())]
+                var.set(table.get(value) and "$%02x  %s" % (value, table[value])
+                        or "$%02x" % value)
+                box = ttk.Combobox(self.props, textvariable=var, values=choices,
+                                   width=26, state="normal")
+                box.grid(row=row, column=1, columnspan=2, sticky="w", pady=1)
+                box.bind("<<ComboboxSelected>>", lambda e, n=name: self._commit_prop(n))
+                box.bind("<Return>", lambda e, n=name: self._commit_prop(n))
+                box.bind("<FocusOut>", lambda e, n=name: self._commit_prop(n))
+                continue
+
+            var.set(str(value))
+            entry = ttk.Entry(self.props, textvariable=var, width=8)
+            entry.grid(row=row, column=1, sticky="w", pady=1)
+            entry.bind("<Return>", lambda e, n=name: self._commit_prop(n))
+            entry.bind("<FocusOut>", lambda e, n=name: self._commit_prop(n))
+            pretty = ""
+            for k, cname in (field.get("sentinels") or {}).items():
+                if value == (int(k, 16) if str(k).lower().startswith("0x") else int(k)):
+                    pretty = cname
+            if pretty:
+                ttk.Label(self.props, text=pretty, foreground="#3465a4",
+                          wraplength=130, justify="left").grid(
+                    row=row, column=2, sticky="w", padx=(6, 0))
+
+    def _commit_prop(self, name):
+        if not self.selection:
+            return
+        role, rec = self.selection
+        raw = self._prop_vars[name].get().strip()
+        try:
+            value = _parse_value(raw)
+        except ValueError:
+            self._refresh_props()
+            return
+        if rec.get(name) != value:
+            rec[name] = value
+            self.doc.objects[role].dirty = True
+            self._refresh_props()
+            self._draw_objects()
+            self._title()
+            self._status()
+
     def _on_tree_select(self, _event):
         sel = self.tree.selection()
         if not sel:
@@ -522,7 +815,7 @@ class EditorWindow(ttk.Frame):
         # open_map selects in the tree, which fires this again - stop the loop here
         if self.doc is not None and self.doc.info is info:
             return
-        if self.doc and self.doc.dirty and not messagebox.askokcancel(
+        if self.doc and self.doc.any_dirty and not messagebox.askokcancel(
                 "Unsaved changes",
                 "%s has unsaved edits. Discard them?" % self.doc.name):
             return
@@ -537,11 +830,32 @@ class EditorWindow(ttk.Frame):
                 cx, cy = self.hover
                 bits.append("cell %d,%d = block $%02x"
                             % (cx, cy, self.doc.view.block_at(cx, cy)))
-            bits.append("brush $%02x" % self.selected_block)
+            if self.tool == "objects":
+                if self.selection:
+                    role, rec = self.selection
+                    layer = self.doc.objects[role]
+                    wx, wy = layer.world_xy(rec)
+                    bits.append("%s #%d %s at %d,%d"
+                                % (role, rec.index,
+                                   layer.label(rec, self.project.enums), wx, wy))
+                else:
+                    bits.append("click an object")
+            else:
+                bits.append("brush $%02x" % self.selected_block)
         bits.append("zoom %g x" % self.scale)
         if self.show_collision:
             bits.append("collision")
         self.status.configure(text="   |   ".join(bits))
+
+
+def _parse_value(raw):
+    """Accept 12, 0x0c, $0c, or the "$0c  ENTITY_FOO" a combobox hands back."""
+    token = raw.split()[0] if raw.split() else raw
+    if token.startswith("$"):
+        return int(token[1:], 16)
+    if token.lower().startswith("0x"):
+        return int(token, 16)
+    return int(token)
 
 
 def _grid(img, step):

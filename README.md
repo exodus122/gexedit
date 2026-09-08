@@ -33,7 +33,8 @@ cells you can see, so a 128x128 gex2 map scrolls as smoothly as a small gex3 one
 
 | | |
 |---|---|
-| left click / drag | paint the selected block |
+| `1` `2` `3` `4`   | Paint · Fill · Rect · Objects |
+| left click / drag | paint, flood fill, drag a rectangle, or select and move an object |
 | right click       | pick the block under the cursor |
 | wheel             | scroll · **ctrl+wheel** zoom |
 | `+` / `-`         | zoom in / out |
@@ -51,6 +52,27 @@ from it directly.
 The collision overlay colours each sub-cell by its collision id rather than drawing a
 collision tileset, since neither repo ships one and "these two blocks collide
 differently" is the thing you actually want to see.
+
+### Objects
+
+The **Objects** tool shows entities, doors and spawn points on the map. Click one to
+select it, drag to move it, and edit any field in the panel on the right. Each layer can
+be hidden from the toolbar, and gex2 doors draw a dashed line to where they lead.
+
+Nothing about those records is written into the editor. The panel is generated from the
+disassembly's own `tools/map_formats.json` — the file `render_map_asm.py` uses to
+generate the annotated `.asm` the ROM is built from — so every field it documents gets a
+row, in record order, and a field with an enum gets a dropdown of the actual constants
+from `constants.asm`. Document a byte there and it appears here.
+
+Positions are world coordinates rather than cells, so an object sits exactly where it
+sits. gex2 stores entity positions in pixels and door positions in blocks; gex3 stores
+everything in pixels and keeps one entity list per *level*, with the map id inside each
+record — the editor shows only the records belonging to the map you are editing. All of
+that is declared in the schema's `editor` block, which is the one editor-specific thing
+added to a disassembly and is inert to its build.
+
+Saving rewrites only the records that changed; the rest of the file is byte-identical.
 
 Which game a repo is gets detected from the map table its source contains, so there is
 nothing to configure. `--game` forces it, and a `.gexedit.json` at a repo's root

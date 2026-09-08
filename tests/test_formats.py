@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gexedit import formats                                    # noqa: E402
+from gexedit import formats, objects                           # noqa: E402
 from gexedit.project import Project, ProjectError              # noqa: E402
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -111,6 +111,72 @@ class TestRenderMatchesMap2png(unittest.TestCase):
             theirs = np.asarray(ref.crop((x, y, x + 32, y + 32)), dtype=int)
             mine = np.asarray(view.renderer.block(b), dtype=int)
             self.assertEqual(int(np.abs(theirs - mine).sum()), 0, "block $%02x" % b)
+
+
+class TestObjectLayers(unittest.TestCase):
+    """Objects are parsed straight from each disassembly's own map_formats.json."""
+
+    def _layers(self, path, map_name):
+        p = _project(path)
+        info = next(m for m in p.maps if m.name == map_name)
+        return p, info, objects.layers_for(p, info)
+
+    def test_gex2_layers_present(self):
+        _p, _i, layers = self._layers(GEX2, "MAP_MEDIA_DIMENSION")
+        self.assertIn("entity_list", layers)
+        self.assertIn("doors", layers)
+
+    def test_gex3_layers_present(self):
+        _p, _i, layers = self._layers(GEX3, "MAP_GEX_CAVE1")
+        self.assertIn("entity_list", layers)
+        self.assertIn("doors", layers)
+
+    def test_round_trip_is_byte_exact(self):
+        for path, name in ((GEX2, "MAP_MEDIA_DIMENSION"), (GEX3, "MAP_GEX_CAVE1")):
+            _p, _i, layers = self._layers(path, name)
+            for role, layer in layers.items():
+                with open(layer.path, "rb") as f:
+                    raw = f.read()
+                self.assertEqual(layer.serialize(), raw,
+                                 "%s %s did not round-trip" % (name, role))
+
+    def test_moving_an_object_only_changes_its_own_bytes(self):
+        _p, info, layers = self._layers(GEX3, "MAP_GEX_CAVE1")
+        layer = layers["entity_list"]
+        with open(layer.path, "rb") as f:
+            before = f.read()
+        rec = layer.on_map(info.id)[0]
+        layer.set_world_xy(rec, 100, 200)
+        after = layer.serialize()
+        self.assertEqual(len(before), len(after))
+        differing = {i // layer.size for i in range(len(before)) if before[i] != after[i]}
+        self.assertEqual(differing, {rec.index})
+
+    def test_gex3_entity_list_is_filtered_by_map(self):
+        p = _project(GEX3)
+        one = next(m for m in p.maps if m.name == "MAP_GEX_CAVE1")
+        two = next(m for m in p.maps if m.name == "MAP_GEX_CAVE2")
+        a = objects.layers_for(p, one)["entity_list"]
+        b = objects.layers_for(p, two)["entity_list"]
+        # same file, different maps: the shared list must be split by map_id
+        self.assertEqual(a.path, b.path)
+        self.assertNotEqual([r.index for r in a.on_map(one.id)],
+                            [r.index for r in b.on_map(two.id)])
+
+    def test_entity_names_resolve(self):
+        p = _project(GEX3)
+        info = next(m for m in p.maps if m.name == "MAP_GEX_CAVE1")
+        layer = objects.layers_for(p, info)["entity_list"]
+        labels = [layer.label(r, p.enums) for r in layer.on_map(info.id)]
+        self.assertTrue(all(l.startswith("ENTITY_") for l in labels), labels)
+
+
+class TestLayerResolution(unittest.TestCase):
+    def test_generated_asm_resolves_to_its_bin(self):
+        """gex3 INCLUDEs generated .asm for its entity lists; the bytes are the .bin."""
+        p = _project(GEX3)
+        path = p.maps[0].layer("entity_list")
+        self.assertTrue(path.endswith(".bin"), path)
 
 
 if __name__ == "__main__":
