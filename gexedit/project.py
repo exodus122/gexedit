@@ -129,6 +129,22 @@ class Project:
         self.maps = self._load_maps()
 
     @property
+    def constants(self):
+        """Every DEF NAME EQU $xx in the repo's constants.asm, by name."""
+        if getattr(self, "_consts", None) is not None:
+            return self._consts
+        table = {}
+        path = os.path.join(self.root, "src", "constants", "constants.asm")
+        if os.path.exists(path):
+            with open(path, errors="replace") as f:
+                for ln in f:
+                    m = re.match(r"^DEF\s+([A-Z0-9_]+)\s+EQU\s+\$([0-9a-fA-F]+)", ln)
+                    if m:
+                        table.setdefault(m.group(1), int(m.group(2), 16))
+        self._consts = table
+        return table
+
+    @property
     def enums(self):
         """name -> {value: CONSTANT}, scraped the way render_map_asm.py scrapes them.
 

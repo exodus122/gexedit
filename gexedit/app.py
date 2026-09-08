@@ -72,31 +72,63 @@ class Document:
             for x in range(min(x0, x1), max(x0, x1) + 1):
                 self.set_block(x, y, block_id, stroke)
 
+    # -- undo -------------------------------------------------------------
+    # One stack for both kinds of edit, so ctrl+Z walks back through block painting
+    # and object moves in the order they were actually made. Object entries are field
+    # changes rather than positions, which is what lets one entry cover a door and the
+    # partner that moved with it.
+
+    def snapshot_objects(self):
+        return {role: [dict(r) for r in layer.records]
+                for role, layer in self.objects.items()}
+
+    def object_changes(self, snapshot):
+        changes = []
+        for role, layer in self.objects.items():
+            for rec, before in zip(layer.records, snapshot.get(role, [])):
+                for field, value in rec.items():
+                    if before.get(field) != value:
+                        changes.append((role, rec.index, field,
+                                        before.get(field), value))
+        return changes
+
     def commit(self, stroke):
         if stroke:
-            self.undo.append(stroke)
+            self.undo.append(("blocks", stroke))
             self.redo.clear()
 
-    def _apply(self, stroke, forward):
-        for cx, cy, old, new in stroke:
-            self.view.set_block(cx, cy, new if forward else old)
-        self.dirty = True
+    def commit_objects(self, changes):
+        if changes:
+            self.undo.append(("objects", changes))
+            self.redo.clear()
+
+    def _apply(self, entry, forward):
+        kind, payload = entry
+        if kind == "blocks":
+            for cx, cy, old, new in payload:
+                self.view.set_block(cx, cy, new if forward else old)
+            self.dirty = True
+        else:
+            for role, index, field, old, new in payload:
+                layer = self.objects[role]
+                layer.records[index][field] = new if forward else old
+                layer.dirty = True
 
     def undo_one(self):
         if not self.undo:
-            return False
-        stroke = self.undo.pop()
-        self._apply(stroke, False)
-        self.redo.append(stroke)
-        return True
+            return None
+        entry = self.undo.pop()
+        self._apply(entry, False)
+        self.redo.append(entry)
+        return entry[0]
 
     def redo_one(self):
         if not self.redo:
-            return False
-        stroke = self.redo.pop()
-        self._apply(stroke, True)
-        self.undo.append(stroke)
-        return True
+            return None
+        entry = self.redo.pop()
+        self._apply(entry, True)
+        self.undo.append(entry)
+        return entry[0]
 
     @property
     def any_dirty(self):
@@ -146,6 +178,7 @@ class EditorWindow(ttk.Frame):
         self.press_at = None
         self.selection = None          # (role, Record)
         self.drag_from = None
+        self.obj_snapshot = None
         self.hover = None
         self._needs_fit = False
         self._photo = None
@@ -539,6 +572,7 @@ class EditorWindow(ttk.Frame):
                 wx, wy = self.doc.objects[hit[0]].world_xy(hit[1])
                 self.drag_from = (self.canvas.canvasx(event.x) - wx * px_scale,
                                   self.canvas.canvasy(event.y) - wy * px_scale)
+                self.obj_snapshot = self.doc.snapshot_objects()
             return
         cell = self._cell_at(event)
         if not cell:
@@ -587,6 +621,13 @@ class EditorWindow(ttk.Frame):
             if self.doc.set_block(cell[0], cell[1], self.selected_block, self.stroke):
                 self.redraw()
 
+    def _finish_object_edit(self):
+        """Turn everything that changed since the press into one undo entry."""
+        if not self.obj_snapshot:
+            return
+        self.doc.commit_objects(self.doc.object_changes(self.obj_snapshot))
+        self.obj_snapshot = None
+
     def _on_release(self, event):
         if self.tool == "view":
             self._pan_end()
@@ -602,6 +643,7 @@ class EditorWindow(ttk.Frame):
             return
         if self.tool == "objects":
             self.drag_from = None
+            self._finish_object_edit()
             return
         if self.tool == "rect":
             cell = self._cell_at(event)
@@ -737,14 +779,22 @@ class EditorWindow(ttk.Frame):
         self._status()
 
     def undo(self):
-        if self.doc and self.doc.undo_one():
-            self.redraw()
-            self._title()
+        self._step(self.doc.undo_one() if self.doc else None)
 
     def redo(self):
-        if self.doc and self.doc.redo_one():
+        self._step(self.doc.redo_one() if self.doc else None)
+
+    def _step(self, kind):
+        if not kind:
+            return
+        if kind == "objects":
+            # the selected record may have moved back under us
+            self._sync_props()
+            self._draw_objects()
+        else:
             self.redraw()
-            self._title()
+        self._title()
+        self._status()
 
     def save(self):
         if not self.doc:
@@ -906,8 +956,10 @@ class EditorWindow(ttk.Frame):
             self._sync_props()
             return
         if rec.get(name) != value:
+            snapshot = self.doc.snapshot_objects()
             rec[name] = value
             self.doc.objects[role].dirty = True
+            self.doc.commit_objects(self.doc.object_changes(snapshot))
             self._sync_props()
             self._draw_objects()
             self._title()

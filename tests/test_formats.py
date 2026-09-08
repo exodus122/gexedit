@@ -307,6 +307,54 @@ class TestDoorPairs(unittest.TestCase):
         self.assertEqual(ents.set_world_xy(ents.records[0], 64, 64), [])
 
 
+class TestDoorAnchor(unittest.TestCase):
+    """A gex2 door is stored as a block, but the game does not use the block's corner."""
+
+    def _doors(self):
+        p = _project(GEX2)
+        info = next(m for m in p.maps if m.name == "MAP_TOON_TV_OUT_OF_TOON")
+        layers = objects.layers_for(p, info)
+        if "doors" not in layers:
+            raise unittest.SkipTest("no door layer")
+        return p, layers["doors"]
+
+    def test_offsets_come_from_the_games_own_constants(self):
+        p, layer = self._doors()
+        ox, oy = layer._offsets()
+        self.assertEqual(ox, p.constants["SPAWN_DOOR_X_OFFSET"])
+        self.assertEqual(oy, p.constants["SPAWN_DOOR_Y_OFFSET"])
+        self.assertEqual((ox, oy), (0x20, 0x10))
+
+    def test_marker_sits_where_the_game_puts_the_player(self):
+        p, layer = self._doors()
+        rec = layer.records[0]
+        block = p.constants["SPAWN_UNITS_PER_BLOCK"]
+        self.assertEqual(layer.world_xy(rec),
+                         (rec["from_x"] * block + p.constants["SPAWN_DOOR_X_OFFSET"],
+                          rec["from_y"] * block + p.constants["SPAWN_DOOR_Y_OFFSET"]))
+
+    def test_the_link_end_is_anchored_too(self):
+        p, layer = self._doors()
+        rec = layer.records[0]
+        block = p.constants["SPAWN_UNITS_PER_BLOCK"]
+        self.assertEqual(layer.link_xy(rec),
+                         (rec["to_x"] * block + p.constants["SPAWN_DOOR_X_OFFSET"],
+                          rec["to_y"] * block + p.constants["SPAWN_DOOR_Y_OFFSET"]))
+
+    def test_round_trip_through_the_anchor_keeps_the_block(self):
+        _p, layer = self._doors()
+        for rec in layer.records:
+            block = (rec["from_x"], rec["from_y"])
+            layer.set_world_xy(rec, *layer.world_xy(rec), sync_partners=False)
+            self.assertEqual((rec["from_x"], rec["from_y"]), block)
+
+    def test_entities_have_no_offset(self):
+        p = _project(GEX2)
+        info = next(m for m in p.maps if m.name == "MAP_TOON_TV_OUT_OF_TOON")
+        ents = objects.layers_for(p, info)["entity_list"]
+        self.assertEqual(ents._offsets(), (0, 0))
+
+
 class TestLayerResolution(unittest.TestCase):
     def test_generated_asm_resolves_to_its_bin(self):
         """gex3 INCLUDEs generated .asm for its entity lists; the bytes are the .bin."""

@@ -42,7 +42,7 @@ cells you can see, so a 128x128 gex2 map scrolls as smoothly as a small gex3 one
 | `f`               | fit the map to the window |
 | `g`               | grid |
 | `c`               | collision overlay |
-| ctrl+Z / ctrl+Y   | undo / redo |
+| ctrl+Z / ctrl+Y   | undo / redo — block painting and object edits share one stack |
 | ctrl+S            | save the map |
 | ctrl+O            | open another repo |
 
@@ -74,6 +74,13 @@ everything in pixels and keeps one entity list per *level*, with the map id insi
 record — the editor shows only the records belonging to the map you are editing. All of
 that is declared in the schema's `editor` block, which is the one editor-specific thing
 added to a disassembly and is inert to its build.
+
+A gex2 door is stored as a block, but the marker is not drawn at that block's corner:
+`call_0b_4efe_Map_SetSpawnPosition` puts the player at
+`block * SPAWN_UNITS_PER_BLOCK + SPAWN_DOOR_X_OFFSET` across and `+ SPAWN_DOOR_Y_OFFSET`
+down — a whole block right and half a block down, which is the difference between the
+marker floating above the scenery and sitting in the doorway. The offsets are named in
+the schema and read from the game's constants, so retuning one moves the markers with it.
 
 gex2's two-way doors are a *pair* of one-directional records that reverse each other, so
 moving one end also repoints anything aimed at where it was. Without that, dragging a

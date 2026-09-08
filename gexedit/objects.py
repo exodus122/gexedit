@@ -22,11 +22,12 @@ class Record(dict):
 class ObjectLayer:
     """One list of records: parsed, editable, and writable back byte for byte."""
 
-    def __init__(self, role, asset, path, data, block_px):
+    def __init__(self, role, asset, path, data, block_px, constants=None):
         self.role = role
         self.asset = asset
         self.path = path
         self.block_px = block_px
+        self.constants = constants or {}
         self.editor = asset.get("editor") or {}
         self.size = asset["record_size"]
         self.fields = [f for line in asset["lines"] for f in line["fields"]]
@@ -88,9 +89,29 @@ class ObjectLayer:
     def _scale(self):
         return self.block_px if self.editor.get("units") == "blocks" else 1
 
+    def _offsets(self):
+        """Where inside its cell a record actually sits, in world units.
+
+        A gex2 door is stored as a block, but the game does not put the player at that
+        block's corner: call_0b_4efe_Map_SetSpawnPosition lands them at
+        block * SPAWN_UNITS_PER_BLOCK + SPAWN_DOOR_X_OFFSET across and
+        + SPAWN_DOOR_Y_OFFSET down - the right edge, halfway down. Drawing the marker at
+        the corner puts it a whole block from where the door really is.
+
+        The offsets are named in the schema and resolved from the game's own constants,
+        so retuning one in the disassembly moves the markers with it.
+        """
+        return (self.constants.get(self.editor.get("x_offset"), 0),
+                self.constants.get(self.editor.get("y_offset"), 0))
+
+    def anchor_note(self):
+        ox, oy = self._offsets()
+        return "+%d,+%d into the block" % (ox, oy) if (ox or oy) else ""
+
     def world_xy(self, rec):
         s = self._scale()
-        return rec[self.editor["x"]] * s, rec[self.editor["y"]] * s
+        ox, oy = self._offsets()
+        return rec[self.editor["x"]] * s + ox, rec[self.editor["y"]] * s + oy
 
     def set_world_xy(self, rec, px, py, sync_partners=True):
         """Move one record, and by default bring its reverse partners with it.
@@ -104,11 +125,12 @@ class ObjectLayer:
         Returns the partner records it changed, so the caller can say so.
         """
         s = self._scale()
+        ox, oy = self._offsets()
         moved = []
         if sync_partners:
             moved = self.partners(rec)
-        rec[self.editor["x"]] = max(0, int(px) // s)
-        rec[self.editor["y"]] = max(0, int(py) // s)
+        rec[self.editor["x"]] = max(0, (int(px) - ox) // s)
+        rec[self.editor["y"]] = max(0, (int(py) - oy) // s)
         here = (rec[self.editor["x"]], rec[self.editor["y"]])
         for q in moved:
             q[self.pairing["to"][0]], q[self.pairing["to"][1]] = here
@@ -140,7 +162,8 @@ class ObjectLayer:
         if not (lx and ly) or lx not in rec:
             return None
         s = self._scale()
-        return rec[lx] * s, rec[ly] * s
+        ox, oy = self._offsets()
+        return rec[lx] * s + ox, rec[ly] * s + oy
 
     def on_map(self, map_id):
         """Records belonging to one map.
@@ -183,7 +206,8 @@ def layers_for(project, info):
         with open(path, "rb") as f:
             data = f.read()
         try:
-            out[role] = ObjectLayer(role, asset, path, data, project.block_px)
+            out[role] = ObjectLayer(role, asset, path, data, project.block_px,
+                                    project.constants)
         except (IndexError, KeyError):
             continue
     return out
