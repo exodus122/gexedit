@@ -194,7 +194,7 @@ class EditorWindow(ttk.Frame):
         bar.pack(side="top", fill="x")
         ttk.Label(bar, text="Tool:").pack(side="left")
         self.tool_var = tk.StringVar(value="paint")
-        for label, value in (("Paint", "paint"), ("Fill", "fill"),
+        for label, value in (("View", "view"), ("Paint", "paint"), ("Fill", "fill"),
                              ("Rect", "rect"), ("Objects", "objects")):
             ttk.Radiobutton(bar, text=label, value=value, variable=self.tool_var,
                             command=self._on_tool).pack(side="left", padx=(4, 8))
@@ -257,6 +257,10 @@ class EditorWindow(ttk.Frame):
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<Button-3>", self._on_pick)
+        # middle-drag pans whatever tool is active, which is the usual convention
+        self.canvas.bind("<Button-2>", self._pan_start)
+        self.canvas.bind("<B2-Motion>", self._pan_move)
+        self.canvas.bind("<ButtonRelease-2>", lambda e: self._pan_end())
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.canvas.bind(seq, self._on_wheel)
 
@@ -280,7 +284,8 @@ class EditorWindow(ttk.Frame):
         r.bind("g", lambda e: self.toggle_grid())
         r.bind("c", lambda e: self.toggle_collision())
         r.bind("f", lambda e: self.fit())
-        for key, tool in (("1", "paint"), ("2", "fill"), ("3", "rect"), ("4", "objects")):
+        for key, tool in (("1", "view"), ("2", "paint"), ("3", "fill"),
+                          ("4", "rect"), ("5", "objects")):
             r.bind(key, lambda e, t=tool: self._set_tool(t))
 
     # --------------------------------------------------------------- state
@@ -494,9 +499,27 @@ class EditorWindow(ttk.Frame):
         self._status()
 
     def _on_motion(self, event):
+        if self.tool == "view":
+            self._set_hover(None)
+            return
         self._set_hover(self._cell_at(event))
 
+    def _pan_start(self, event):
+        self.canvas.scan_mark(event.x, event.y)
+        self.canvas.configure(cursor="fleur")
+
+    def _pan_move(self, event):
+        # gain=1 so the map tracks the pointer exactly rather than accelerating
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+        self.redraw()
+
+    def _pan_end(self):
+        self.canvas.configure(cursor="")
+
     def _on_press(self, event):
+        if self.tool == "view":
+            self._pan_start(event)
+            return
         if self.tool == "objects":
             hit = self._object_at(event)
             self.select_object(hit)
@@ -525,6 +548,9 @@ class EditorWindow(ttk.Frame):
             self._title()
 
     def _on_drag(self, event):
+        if self.tool == "view":
+            self._pan_move(event)
+            return
         if self.tool == "objects":
             if self.selection and self.drag_from:
                 role, rec = self.selection
@@ -547,6 +573,9 @@ class EditorWindow(ttk.Frame):
                 self.redraw()
 
     def _on_release(self, event):
+        if self.tool == "view":
+            self._pan_end()
+            return
         if self.tool == "objects":
             self.drag_from = None
             return
@@ -576,15 +605,12 @@ class EditorWindow(ttk.Frame):
         delta = 0
         if getattr(event, "delta", 0):
             delta = 1 if event.delta > 0 else -1
-        elif event.num == 4:
+        elif getattr(event, "num", 0) == 4:
             delta = 1
-        elif event.num == 5:
+        elif getattr(event, "num", 0) == 5:
             delta = -1
-        if event.state & 0x0004:                # ctrl held: zoom
-            self.zoom(delta)
-        else:
-            self.canvas.yview_scroll(-delta * 3, "units")
-            self.redraw()
+        if delta:
+            self.zoom(delta, event)
 
     # ------------------------------------------------------------- palette
     def draw_palette(self):
@@ -625,13 +651,37 @@ class EditorWindow(ttk.Frame):
             self._status()
 
     # -------------------------------------------------------------- actions
-    def zoom(self, delta):
+    def zoom(self, delta, event=None):
+        """Change zoom, keeping the point under the cursor where it is.
+
+        Without the anchor, zooming walks away from whatever you were looking at, which
+        is the whole reason wheel-zoom feels wrong in most tile editors. The world
+        position under the pointer is measured before the change and the view is moved
+        so it lands back under the same pixel afterwards.
+        """
         new = min(len(ZOOMS) - 1, max(0, self.zoom_index + delta))
-        if new != self.zoom_index:
-            self.zoom_index = new
-            self._update_scrollregion()
-            self.redraw()
-            self._status()
+        if new == self.zoom_index:
+            return
+        anchor = None
+        if event is not None and self.doc:
+            before = self.px_scale
+            anchor = (self.canvas.canvasx(event.x) / before,
+                      self.canvas.canvasy(event.y) / before,
+                      event.x, event.y)
+
+        self.zoom_index = new
+        self._update_scrollregion()
+
+        if anchor and self.doc:
+            wx, wy, sx, sy = anchor
+            after = self.px_scale
+            total_w = max(1, self.doc.info.width * self.cell_px)
+            total_h = max(1, self.doc.info.height * self.cell_px)
+            self.canvas.xview_moveto(max(0.0, (wx * after - sx) / total_w))
+            self.canvas.yview_moveto(max(0.0, (wy * after - sy) / total_h))
+
+        self.redraw()
+        self._status()
 
     def toggle_grid(self):
         self.show_grid = not self.show_grid
@@ -704,6 +754,9 @@ class EditorWindow(ttk.Frame):
         self.tool = self.tool_var.get()
         if self.tool != "objects":
             self.select_object(None)
+        self.canvas.configure(cursor="hand2" if self.tool == "view" else "")
+        if self.tool == "view":
+            self._set_hover(None)
         self._status()
 
     def _rebuild_layer_toggles(self):
@@ -830,7 +883,9 @@ class EditorWindow(ttk.Frame):
                 cx, cy = self.hover
                 bits.append("cell %d,%d = block $%02x"
                             % (cx, cy, self.doc.view.block_at(cx, cy)))
-            if self.tool == "objects":
+            if self.tool == "view":
+                bits.append("drag to move the view")
+            elif self.tool == "objects":
                 if self.selection:
                     role, rec = self.selection
                     layer = self.doc.objects[role]

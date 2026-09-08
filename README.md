@@ -33,10 +33,11 @@ cells you can see, so a 128x128 gex2 map scrolls as smoothly as a small gex3 one
 
 | | |
 |---|---|
-| `1` `2` `3` `4`   | Paint · Fill · Rect · Objects |
-| left click / drag | paint, flood fill, drag a rectangle, or select and move an object |
+| `1`…`5`           | View · Paint · Fill · Rect · Objects |
+| wheel             | zoom, toward whatever is under the pointer |
+| middle drag       | move the view, from any tool |
+| left click / drag | move the view, paint, flood fill, drag a rectangle, or select and move an object — whichever tool is active |
 | right click       | pick the block under the cursor |
-| wheel             | scroll · **ctrl+wheel** zoom |
 | `+` / `-`         | zoom in / out |
 | `f`               | fit the map to the window |
 | `g`               | grid |
