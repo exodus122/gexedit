@@ -87,6 +87,15 @@ class ObjectLayer:
         return bool(self.editor.get("x") and self.editor.get("y"))
 
     def _scale(self):
+        """World units per stored unit.
+
+        Records are stored in whatever grid the game indexes them by: pixels for gex2
+        entities, blocks for gex2 doors, and 16-pixel cells for collectibles in both -
+        which is a block in gex3 but half of one in gex2, so it has to be its own number
+        rather than derived from the block size.
+        """
+        if self.editor.get("scale"):
+            return int(self.editor["scale"])
         return self.block_px if self.editor.get("units") == "blocks" else 1
 
     def _offsets(self):
@@ -175,6 +184,45 @@ class ObjectLayer:
         if not field:
             return list(self.records)
         return [r for r in self.records if r.get(field) == map_id]
+
+    # ----------------------------------------------------------------- editing
+    def new_record(self, px, py, map_id=None, template=None):
+        """Append a record at a world position and return it.
+
+        APPENDED, never inserted: gex2's wD000_EntityFlags is indexed by an entry's
+        position in its list, so putting a record in the middle renumbers the saved
+        state of everything after it. Appending leaves existing indices alone.
+
+        A template - normally the selected record - supplies the non-positional fields,
+        so adding an object next to one like it is a click rather than a form to fill in.
+        """
+        values = {f["name"]: 0 for f in self.fields}
+        if template is not None:
+            values.update({k: v for k, v in template.items()})
+        rec = Record(len(self.records), values)
+        self.records.append(rec)
+        field = self.editor.get("map_field")
+        if field and map_id is not None:
+            rec[field] = map_id
+        self.set_world_xy(rec, px, py, sync_partners=False)
+        self.dirty = True
+        return rec
+
+    def delete(self, rec):
+        """Remove a record and renumber the rest. Returns the indices that shifted."""
+        if rec not in self.records:
+            return []
+        self.records.remove(rec)
+        shifted = []
+        for i, q in enumerate(self.records):
+            if q.index != i:
+                shifted.append((q.index, i))
+                q.index = i
+        self.dirty = True
+        return shifted
+
+    def is_last(self, rec):
+        return bool(self.records) and self.records[-1] is rec
 
     # ------------------------------------------------------------------ labels
     def label(self, rec, enums=None):

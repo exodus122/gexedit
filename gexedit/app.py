@@ -97,6 +97,27 @@ class Document:
             self.undo.append(("blocks", stroke))
             self.redo.clear()
 
+    def _insert(self, role, index, values):
+        layer = self.objects[role]
+        rec = objects.Record(index, values)
+        layer.records.insert(index, rec)
+        for i, q in enumerate(layer.records):
+            q.index = i
+        layer.dirty = True
+        return rec
+
+    def _remove(self, role, index):
+        layer = self.objects[role]
+        del layer.records[index]
+        for i, q in enumerate(layer.records):
+            q.index = i
+        layer.dirty = True
+
+    def commit_structure(self, role, index, values, added):
+        """One added or deleted record, as its own undo step."""
+        self.undo.append(("structure", (role, index, values, added)))
+        self.redo.clear()
+
     def commit_objects(self, changes):
         if changes:
             self.undo.append(("objects", changes))
@@ -104,6 +125,13 @@ class Document:
 
     def _apply(self, entry, forward):
         kind, payload = entry
+        if kind == "structure":
+            role, index, values, added = payload
+            if added == forward:
+                self._insert(role, index, dict(values))
+            else:
+                self._remove(role, index)
+            return
         if kind == "blocks":
             for cx, cy, old, new in payload:
                 self.view.set_block(cx, cy, new if forward else old)
@@ -170,6 +198,7 @@ class EditorWindow(ttk.Frame):
         self.show_grid = False
         self.show_collision = False
         self.link_pairs = True
+        self.add_layer = tk.StringVar()
         self.partner_note = ""
         self.selected_block = 0
         self.stroke = None
@@ -299,6 +328,7 @@ class EditorWindow(ttk.Frame):
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<Button-3>", self._on_pick)
+        self.canvas.bind("<Double-Button-1>", self._on_add_object)
         # middle-drag pans whatever tool is active, which is the usual convention
         self.canvas.bind("<Button-2>", self._pan_start)
         self.canvas.bind("<B2-Motion>", self._pan_move)
@@ -320,6 +350,7 @@ class EditorWindow(ttk.Frame):
         r.bind("<Control-q>", lambda e: r.destroy())
         r.bind("<Control-z>", lambda e: self.undo())
         r.bind("<Control-y>", lambda e: self.redo())
+        r.bind("<Delete>", lambda e: self.delete_object())
         r.bind("<plus>", lambda e: self.zoom(1))
         r.bind("<equal>", lambda e: self.zoom(1))
         r.bind("<minus>", lambda e: self.zoom(-1))
@@ -621,6 +652,60 @@ class EditorWindow(ttk.Frame):
             if self.doc.set_block(cell[0], cell[1], self.selected_block, self.stroke):
                 self.redraw()
 
+    def _on_add_object(self, event):
+        """Double-click puts a new record where you clicked.
+
+        It is appended rather than inserted, because gex2 indexes saved entity state by
+        an entry's position in its list - inserting would renumber everything after it.
+        The currently selected record, when there is one in the same layer, supplies the
+        other fields, so adding another of something is one gesture.
+        """
+        if self.tool != "objects" or not self.doc:
+            return
+        role = self.add_layer.get()
+        layer = self.doc.objects.get(role)
+        if layer is None:
+            return
+        # clamp into the map, so a double-click on the empty ground beside it does not
+        # place something the game will never reach
+        bp = self.project.block_px
+        wx = min(max(0.0, self.canvas.canvasx(event.x) / self.px_scale),
+                 self.doc.info.width * bp - 1)
+        wy = min(max(0.0, self.canvas.canvasy(event.y) / self.px_scale),
+                 self.doc.info.height * bp - 1)
+        template = None
+        if self.selection and self.selection[0] == role:
+            template = self.selection[1]
+        rec = layer.new_record(wx, wy, map_id=self.doc.info.id, template=template)
+        self.doc.commit_structure(role, rec.index, dict(rec), True)
+        self.doc.visible[role] = True
+        self._rebuild_layer_toggles()
+        self.select_object((role, rec))
+        self._title()
+        self.status.configure(text="added %s #%d at %d,%d"
+                              % (role, rec.index, *layer.world_xy(rec)))
+
+    def delete_object(self):
+        if not self.selection or not self.doc:
+            return
+        role, rec = self.selection
+        layer = self.doc.objects[role]
+        if not layer.is_last(rec) and not messagebox.askokcancel(
+                "Delete %s #%d" % (role, rec.index),
+                "This is not the last record, so removing it renumbers every record "
+                "after it.\n\nIn gex2 the saved state of an entity is indexed by its "
+                "position in the list, so renumbering shifts which object a saved flag "
+                "refers to.\n\nDelete anyway?"):
+            return
+        values = dict(rec)
+        index = rec.index
+        self.doc._remove(role, index)
+        self.doc.commit_structure(role, index, values, False)
+        self._rebuild_layer_toggles()
+        self.select_object(None)
+        self._title()
+        self.status.configure(text="deleted %s #%d" % (role, index))
+
     def _finish_object_edit(self):
         """Turn everything that changed since the press into one undo entry."""
         if not self.obj_snapshot:
@@ -787,7 +872,11 @@ class EditorWindow(ttk.Frame):
     def _step(self, kind):
         if not kind:
             return
-        if kind == "objects":
+        if kind == "structure":
+            self.select_object(None)
+            self._rebuild_layer_toggles()
+            self._draw_objects()
+        elif kind == "objects":
             # the selected record may have moved back under us
             self._sync_props()
             self._draw_objects()
@@ -843,6 +932,13 @@ class EditorWindow(ttk.Frame):
         self._layer_vars = {}
         if not self.doc:
             return
+        roles = sorted(self.doc.objects)
+        if roles:
+            ttk.Label(self.layer_bar, text="add to:").pack(side="left", padx=(0, 3))
+            if self.add_layer.get() not in roles:
+                self.add_layer.set(roles[0])
+            ttk.Combobox(self.layer_bar, textvariable=self.add_layer, values=roles,
+                         width=14, state="readonly").pack(side="left", padx=(0, 10))
         for role, layer in sorted(self.doc.objects.items()):
             var = tk.BooleanVar(value=self.doc.visible.get(role, True))
             self._layer_vars[role] = var

@@ -62,10 +62,20 @@ class TestBlockmaps(unittest.TestCase):
         self.assertEqual((lo, hi), (bytes([1, 2]), bytes([0, 1])))
 
 
+_PROJECTS = {}
+
+
 def _project(path):
+    """One Project per repo for the whole run.
+
+    Opening one walks every .asm in the repo to build the label table, which is fast
+    once and slow thirty times over.
+    """
     if not os.path.isdir(path):
         raise unittest.SkipTest("%s not found beside this repo" % path)
-    return Project(path)
+    if path not in _PROJECTS:
+        _PROJECTS[path] = Project(path)
+    return _PROJECTS[path]
 
 
 class TestProjects(unittest.TestCase):
@@ -353,6 +363,88 @@ class TestDoorAnchor(unittest.TestCase):
         info = next(m for m in p.maps if m.name == "MAP_TOON_TV_OUT_OF_TOON")
         ents = objects.layers_for(p, info)["entity_list"]
         self.assertEqual(ents._offsets(), (0, 0))
+
+
+class TestCollectibles(unittest.TestCase):
+    """Collectibles are stored in 16-pixel grid cells, which is not a block in gex2."""
+
+    def _layer(self, root, map_name):
+        p = _project(root)
+        info = next(m for m in p.maps if m.name == map_name)
+        layers = objects.layers_for(p, info)
+        if "collectible_list" not in layers:
+            raise unittest.SkipTest("no collectible layer")
+        return p, info, layers["collectible_list"]
+
+    def test_gex2_grid_is_half_a_block(self):
+        p, _i, layer = self._layer(GEX2, "MAP_TOON_TV_OUT_OF_TOON")
+        self.assertEqual(layer._scale(), 16)
+        self.assertEqual(p.block_px, 32)
+
+    def test_gex3_carries_a_map_id(self):
+        _p, info, layer = self._layer(GEX3, "MAP_HOLIDAY_TV1")
+        self.assertEqual(layer.size, 3)
+        self.assertIn("map_id", layer.records[0])
+        self.assertLess(len(layer.on_map(info.id)), len(layer.records))
+
+    def test_round_trip(self):
+        for root, name in ((GEX2, "MAP_TOON_TV_OUT_OF_TOON"),
+                           (GEX3, "MAP_HOLIDAY_TV1")):
+            _p, _i, layer = self._layer(root, name)
+            with open(layer.path, "rb") as f:
+                self.assertEqual(layer.serialize(), f.read())
+
+    def test_terminator_is_kept(self):
+        _p, _i, layer = self._layer(GEX3, "MAP_HOLIDAY_TV1")
+        self.assertEqual(layer.trailing[:3], b"\x00\x00\xff")
+
+
+class TestAddAndDelete(unittest.TestCase):
+    def _layer(self):
+        p = _project(GEX2)
+        info = next(m for m in p.maps if m.name == "MAP_TOON_TV_OUT_OF_TOON")
+        return p, info, objects.layers_for(p, info)["collectible_list"]
+
+    def test_new_record_is_appended(self):
+        """Never inserted: gex2 indexes saved entity state by list position."""
+        _p, info, layer = self._layer()
+        n = len(layer.records)
+        rec = layer.new_record(320, 160, map_id=info.id)
+        self.assertEqual(rec.index, n)
+        self.assertIs(layer.records[-1], rec)
+
+    def test_new_record_lands_on_the_grid(self):
+        _p, info, layer = self._layer()
+        rec = layer.new_record(327, 165, map_id=info.id)
+        self.assertEqual(layer.world_xy(rec), (320, 160))
+
+    def test_template_supplies_the_other_fields(self):
+        _p, info, layer = self._layer()
+        src = layer.records[0]
+        rec = layer.new_record(320, 160, map_id=info.id, template=src)
+        for name in rec:
+            if name not in ("grid_x", "grid_y"):
+                self.assertEqual(rec[name], src[name])
+
+    def test_delete_renumbers_and_reports_the_shift(self):
+        _p, _i, layer = self._layer()
+        n = len(layer.records)
+        shifted = layer.delete(layer.records[3])
+        self.assertEqual(len(layer.records), n - 1)
+        self.assertEqual([r.index for r in layer.records], list(range(n - 1)))
+        self.assertTrue(shifted, "deleting a middle record should report a shift")
+
+    def test_deleting_the_last_shifts_nothing(self):
+        _p, _i, layer = self._layer()
+        self.assertEqual(layer.delete(layer.records[-1]), [])
+
+    def test_added_records_survive_serialization(self):
+        _p, info, layer = self._layer()
+        tail = layer.trailing
+        layer.new_record(320, 160, map_id=info.id)
+        data = layer.serialize()
+        self.assertEqual(len(data), len(layer.records) * layer.size + len(tail))
+        self.assertTrue(data.endswith(tail))
 
 
 class TestLayerResolution(unittest.TestCase):

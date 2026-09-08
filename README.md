@@ -42,7 +42,9 @@ cells you can see, so a 128x128 gex2 map scrolls as smoothly as a small gex3 one
 | `f`               | fit the map to the window |
 | `g`               | grid |
 | `c`               | collision overlay |
-| ctrl+Z / ctrl+Y   | undo / redo — block painting and object edits share one stack |
+| double click      | add an object where you clicked, into the layer named in the toolbar |
+| `Delete`          | remove the selected object |
+| ctrl+Z / ctrl+Y   | undo / redo — painting, object edits, adds and deletes share one stack |
 | ctrl+S            | save the map |
 | ctrl+O            | open another repo |
 
@@ -56,7 +58,7 @@ differently" is the thing you actually want to see.
 
 ### Objects
 
-Entities, doors and spawn points are drawn on the map. Clicking one selects it in the
+Entities, collectibles, doors and spawn points are drawn on the map. Clicking one selects it in the
 View tool too, so you can inspect things without leaving the tool you navigate with; the
 **Objects** tool is what lets you drag them. Either way, every field is editable in the
 panel on the right. Each layer can
@@ -81,6 +83,18 @@ A gex2 door is stored as a block, but the marker is not drawn at that block's co
 down — a whole block right and half a block down, which is the difference between the
 marker floating above the scenery and sitting in the doorway. The offsets are named in
 the schema and read from the game's constants, so retuning one moves the markers with it.
+
+Adding **appends** rather than inserts, and deleting a record that is not the last one
+asks first. This is not fussiness: gex2 indexes an entity's saved state by its position
+in the list (`wD000_EntityFlags`), so renumbering shifts which object a saved flag refers
+to. A new record copies its non-positional fields from the selected one, so placing
+another of something is a double-click, and in gex3 it gets the current map's id — a
+record without that would belong to no map and never appear.
+
+Collectibles are stored in 16-pixel grid cells rather than blocks or pixels, which is
+half a block in gex2 and a whole one in gex3. gex2's lists are authored sorted by
+ascending X and the loader's per-column index depends on it, so moving one to the left of
+an earlier one will place it but the game will not find it.
 
 gex2's two-way doors are a *pair* of one-directional records that reverse each other, so
 moving one end also repoints anything aimed at where it was. Without that, dragging a
