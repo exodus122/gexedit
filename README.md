@@ -26,6 +26,32 @@ python3 -m gexedit --games                    # what it knows how to open
 
 Installed (`pip install -e .`) the same thing is just `gexedit ../gex2gbc`.
 
+### In the editor
+
+Pick a map on the left, a block on the right, and paint. The map view renders only the
+cells you can see, so a 128x128 gex2 map scrolls as smoothly as a small gex3 one.
+
+| | |
+|---|---|
+| left click / drag | paint the selected block |
+| right click       | pick the block under the cursor |
+| wheel             | scroll · **ctrl+wheel** zoom |
+| `+` / `-`         | zoom in / out |
+| `f`               | fit the map to the window |
+| `g`               | grid |
+| `c`               | collision overlay |
+| ctrl+Z / ctrl+Y   | undo / redo |
+| ctrl+S            | save the map |
+| ctrl+O            | open another repo |
+
+Saving writes the blockmap back in whatever shape the game stores it — one flat plane
+for gex2, `_map.bin` plus `_map_extended.bin` for gex3 — so the disassembly rebuilds
+from it directly.
+
+The collision overlay colours each sub-cell by its collision id rather than drawing a
+collision tileset, since neither repo ships one and "these two blocks collide
+differently" is the thing you actually want to see.
+
 Which game a repo is gets detected from the map table its source contains, so there is
 nothing to configure. `--game` forces it, and a `.gexedit.json` at a repo's root
 overrides both — useful for a fork whose layout has moved.

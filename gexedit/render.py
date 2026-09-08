@@ -142,6 +142,27 @@ class MapView:
             self.alt_renderer = BlockRenderer(self.tileset, self.alt_blocks,
                                               self.palettes, self.cells, palette_ids)
 
+        # collision: gex3 keeps a parallel grid plus its own tiny blockset, gex2 keeps
+        # a quadrant of the same bank indexed by the very same block ids
+        self.coll_cells = None
+        self.coll_blocks = None
+        if p["collision"] == "separate":
+            raw = info.read("collision")
+            if raw:
+                self.coll_cells = list(raw)
+            cb = info.read("collision_blockset")
+            if cb:
+                self.coll_blocks = formats.parse_collision_blockset(
+                    cb, self.cells * self.cells)
+        else:
+            spec = p["blockset_bank"]
+            bank = info.read("blockset_collision") or b""
+            size = spec["blocks"] * spec["block_bytes"]
+            self.coll_cells = self.cells_map
+            self.coll_blocks = [b.tiles for b in formats.parse_blockset_planar(
+                bank[spec["collision"]:spec["collision"] + size],
+                spec["block_bytes"], spec["blocks"], spec["plane_stride"])]
+
         # which map cells take the alternate blockset
         self.alt_mask = 0
         name = (info.extra or {}).get("alt_mask")
@@ -161,6 +182,41 @@ class MapView:
         i = cy * self.width + cx
         return i < len(self.alt_plane) and bool(self.alt_plane[i] & self.alt_mask)
 
+    def collision_at(self, cx, cy):
+        """The collision ids under one map cell, one per sub-cell, or None."""
+        if self.coll_cells is None or self.coll_blocks is None:
+            return None
+        i = cy * self.width + cx
+        if i >= len(self.coll_cells):
+            return None
+        cid = self.coll_cells[i]
+        if cid >= len(self.coll_blocks):
+            return None
+        return self.coll_blocks[cid]
+
+    def render_collision(self, region=None, alpha=110):
+        """A translucent overlay the caller composites over render()."""
+        cx0, cy0, cw, ch = region or (0, 0, self.width, self.height)
+        cw = min(cw, self.width - cx0)
+        ch = min(ch, self.height - cy0)
+        bp = self.block_px
+        sub = bp // self.cells
+        out = np.zeros((ch * bp, cw * bp, 4), dtype=np.uint8)
+        for y in range(ch):
+            for x in range(cw):
+                ids = self.collision_at(cx0 + x, cy0 + y)
+                if not ids:
+                    continue
+                for k, value in enumerate(ids[:self.cells * self.cells]):
+                    colour = collision_colour(value)
+                    if colour is None:
+                        continue
+                    py = y * bp + (k // self.cells) * sub
+                    px = x * bp + (k % self.cells) * sub
+                    out[py:py + sub, px:px + sub, 0:3] = colour
+                    out[py:py + sub, px:px + sub, 3] = alpha
+        return Image.fromarray(out, "RGBA")
+
     def render(self, region=None, scale=1, grid=False):
         """Render `region` = (cx, cy, cw, ch) in cells, or the whole map."""
         cx0, cy0, cw, ch = region or (0, 0, self.width, self.height)
@@ -179,6 +235,22 @@ class MapView:
         if grid:
             img = _draw_grid(img, bp * scale)
         return img
+
+
+COLLISION_EMPTY = 0
+
+
+def collision_colour(value):
+    """A stable colour per collision id.
+
+    There is no collision tileset to draw from in either repo, and a colour per id is
+    more useful than tiles anyway: it makes "these two blocks collide differently"
+    visible at a glance. Id 0 is empty and draws as nothing.
+    """
+    if value == COLLISION_EMPTY:
+        return None
+    h = (value * 2654435761) & 0xFFFFFFFF
+    return ((h >> 16) & 0x7F | 0x80, (h >> 8) & 0x7F | 0x80, h & 0x7F | 0x80)
 
 
 def _draw_grid(img, step):
