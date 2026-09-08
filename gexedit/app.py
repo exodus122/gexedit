@@ -300,8 +300,20 @@ class EditorWindow(ttk.Frame):
 
         # right: the blockset
         right = ttk.Frame(panes, width=PALETTE_COLS * PALETTE_CELL + 90)
-        self.palette_label = ttk.Label(right, text="Blocks", padding=(6, 4))
-        self.palette_label.pack(anchor="w")
+        pal_head = ttk.Frame(right)
+        pal_head.pack(fill="x")
+        self.palette_label = ttk.Label(pal_head, text="Blocks", padding=(6, 4))
+        self.palette_label.pack(side="left")
+        # gex2 expands some cells from the alt blockset - the bank's second region -
+        # instead of the first. Which cells is NOT a property of the block id: it is the
+        # alt_blockset_flags plane, indexed by position and masked per map, which the
+        # editor only reads. So this switches what the palette DRAWS and nothing else;
+        # the index it hands the brush is the same block id either way. Disabled for
+        # gex3, which has one blockset per map and no alt.
+        self.palette_alt = tk.BooleanVar(value=False)
+        self.palette_alt_btn = ttk.Checkbutton(pal_head, text="alt", variable=self.palette_alt,
+                                               command=self.draw_palette)
+        self.palette_alt_btn.pack(side="right", padx=(0, 6))
         pal_wrap = ttk.Frame(right)
         pal_wrap.pack(fill="both", expand=True)
         self.palette = tk.Canvas(pal_wrap, bg="#15181d", highlightthickness=0,
@@ -356,6 +368,7 @@ class EditorWindow(ttk.Frame):
         r.bind("<minus>", lambda e: self.zoom(-1))
         r.bind("g", lambda e: self.toggle_grid())
         r.bind("c", lambda e: self.toggle_collision())
+        r.bind("a", lambda e: self.toggle_palette_alt())
         r.bind("f", lambda e: self.fit())
         for key, tool in (("1", "view"), ("2", "paint"), ("3", "fill"),
                           ("4", "rect"), ("5", "objects")):
@@ -767,12 +780,19 @@ class EditorWindow(ttk.Frame):
     def draw_palette(self):
         if not self.doc:
             return
-        blocks = self.doc.view.blocks
+        view = self.doc.view
+        has_alt = view.alt_renderer is not None
+        self.palette_alt_btn.configure(state="normal" if has_alt else "disabled")
+        if not has_alt:
+            self.palette_alt.set(False)
+        show_alt = has_alt and self.palette_alt.get()
+        renderer = view.alt_renderer if show_alt else view.renderer
+        blocks = view.blocks
         rows = (len(blocks) + PALETTE_COLS - 1) // PALETTE_COLS
         sheet = Image.new("RGB", (PALETTE_COLS * PALETTE_CELL, rows * PALETTE_CELL),
                           (21, 24, 29))
         for i in range(len(blocks)):
-            tile = Image.fromarray(self.doc.view.renderer.block(i), "RGB")
+            tile = Image.fromarray(renderer.block(i), "RGB")
             tile = tile.resize((PALETTE_CELL, PALETTE_CELL), Image.NEAREST)
             sheet.paste(tile, ((i % PALETTE_COLS) * PALETTE_CELL,
                                (i // PALETTE_COLS) * PALETTE_CELL))
@@ -780,7 +800,8 @@ class EditorWindow(ttk.Frame):
         self.palette.delete("all")
         self.palette.create_image(0, 0, image=self._palette_photo, anchor="nw")
         self.palette.configure(scrollregion=(0, 0, sheet.width, sheet.height))
-        self.palette_label.configure(text="Blocks  (%d)" % len(blocks))
+        self.palette_label.configure(text="%s  (%d)"
+                                     % ("Alt blocks" if show_alt else "Blocks", len(blocks)))
         self._mark_selected()
 
     def _mark_selected(self):
@@ -841,6 +862,12 @@ class EditorWindow(ttk.Frame):
     def _on_link_toggle(self):
         self.link_pairs = self.link_var.get()
         self._status()
+
+    def toggle_palette_alt(self):
+        if str(self.palette_alt_btn.cget("state")) == "disabled":
+            return
+        self.palette_alt.set(not self.palette_alt.get())
+        self.draw_palette()
 
     def toggle_collision(self):
         self.show_collision = not self.show_collision
