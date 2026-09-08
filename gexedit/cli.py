@@ -68,6 +68,39 @@ def main(argv=None):
     try:
         from .app import run
     except ImportError as e:
-        sys.exit("the GUI is not built yet (%s).\n"
-                 "Try --list or --render in the meantime." % e)
+        sys.exit(_gui_import_help(e))
     return run(project)
+
+
+def _gui_import_help(exc):
+    """Say which dependency is actually missing.
+
+    Everything the GUI needs is optional to the rest of the tool, so this is the one
+    place a user meets a broken install - it is worth naming the package and the fix
+    rather than reporting a bare ImportError.
+    """
+    text = str(exc)
+    if "gexedit.app" in text:
+        return "the GUI module is missing from this install (%s)." % text
+
+    hints = [
+        ("tkinter", "Tk is not installed for this Python.\n"
+                    "  Debian/Ubuntu/WSL: sudo apt install python3-tk\n"
+                    "  Windows/macOS:     it ships with the python.org build"),
+        ("_imaging", "Pillow is installed but its compiled part is missing, which\n"
+                     "usually means a half-replaced install.\n"
+                     "  Debian/Ubuntu/WSL: sudo apt install --reinstall python3-pil "
+                     "python3-pil.imagetk\n"
+                     "  or in a venv:      pip install --force-reinstall pillow"),
+        ("ImageTk", "Pillow is missing its Tk bridge.\n"
+                    "  Debian/Ubuntu/WSL: sudo apt install python3-pil.imagetk\n"
+                    "  or in a venv:      pip install --force-reinstall pillow"),
+        ("PIL", "Pillow is not installed.  pip install pillow"),
+        ("numpy", "numpy is not installed.  pip install numpy"),
+    ]
+    for needle, advice in hints:
+        if needle in text:
+            return "cannot start the GUI: %s\n\n%s\n\n" \
+                   "--list and --render need none of this and still work." % (text, advice)
+    return "cannot start the GUI: %s\n\n" \
+           "--list and --render may still work." % text
