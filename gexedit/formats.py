@@ -148,7 +148,7 @@ def parse_blockmap8(data, width, height):
 
 
 def parse_blockmap16(low, high, width, height):
-    """gex3: the id is split across _map.bin and _map_extended.bin."""
+    """gex3: the id is split across _blockmap.bin and _blockmap_hi.bin."""
     out = []
     for i in range(width * height):
         lo = low[i] if i < len(low) else 0

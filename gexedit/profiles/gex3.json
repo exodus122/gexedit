@@ -10,7 +10,7 @@
   "manifest": {
     "kind": "gex3_mapdata",
     "source": "src/code/bank03_map_init_data.asm",
-    "layers": ["map", "map_extended", "tileset", "blockset", "collision",
+    "layers": ["blockmap", "blockmap_hi", "tileset", "blockset", "collision",
                "collision_blockset", "palette", "entity_list", "collectible_list"]
   }
 }

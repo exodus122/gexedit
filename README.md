@@ -49,7 +49,7 @@ cells you can see, so a 128x128 gex2 map scrolls as smoothly as a small gex3 one
 | ctrl+O            | open another repo |
 
 Saving writes the blockmap back in whatever shape the game stores it — one flat plane
-for gex2, `_map.bin` plus `_map_extended.bin` for gex3 — so the disassembly rebuilds
+for gex2, `_blockmap.bin` plus `_blockmap_hi.bin` for gex3 — so the disassembly rebuilds
 from it directly.
 
 The collision overlay colours each sub-cell by its collision id rather than drawing a

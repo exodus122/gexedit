@@ -168,7 +168,7 @@ class Document:
         if prof["blockmap"] == "split16":
             lo, hi = formats.serialize_blockmap16(self.view.cells_map)
             written = []
-            for role, data in (("map", lo), ("map_extended", hi)):
+            for role, data in (("blockmap", lo), ("blockmap_hi", hi)):
                 path = self.info.layer(role)
                 if path:
                     with open(path, "wb") as f:

@@ -224,7 +224,7 @@ class MapView:
 
         if p["blockmap"] == "split16":
             self.cells_map = formats.parse_blockmap16(
-                info.read("map") or b"", info.read("map_extended"),
+                info.read("blockmap") or b"", info.read("blockmap_hi"),
                 self.width, self.height)
         else:
             self.cells_map = formats.parse_blockmap8(
