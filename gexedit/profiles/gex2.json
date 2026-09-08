@@ -1,7 +1,7 @@
 {
   "game": "gex2",
   "title": "Gex: Enter the Gecko (GBC)",
-  "_doc": "How this repo lays out its map data. The editor reads this rather than guessing, which is what lets one editor serve both games. gex2 differs from gex3 in every structural choice: a block is 4x4 tiles rather than 2x2, block ids are 8-bit so a blockmap is one flat byte plane, collision shares the blockset's bank rather than living in its own file, and a tile's palette comes from a per-channel table indexed by tile id rather than from a per-cell attribute byte.",
+  "_doc": "How this repo lays out its map data. The editor reads this rather than guessing, which is what lets one editor serve both games. gex2 differs from gex3 in every structural choice: a block is 4x4 tiles rather than 2x2, block ids are 8-bit so a blockmap is one flat byte plane, collision is a tile-type plane inside the same bank as the graphics, keyed by the same block ids, rather than a blockset of its own, and a tile's palette comes from a per-channel table indexed by tile id rather than from a per-cell attribute byte.",
   "block_tiles": 4,
   "blockmap": "flat8",
   "blockset": "planar_quadrants",
@@ -9,11 +9,7 @@
   "palette_source": "per_channel_tile_ids",
   "geometry": { "width": 128, "height": 128 },
   "blockset_bank": {
-    "_doc": "The 16 KiB blockset_collision bank is four quadrants. call_00_169f_BlockPatch_WriteTiles reaches the tile half at $40xx-$4Fxx and the collision half at $60xx-$6Fxx, and takes the $50xx page instead of $40xx when a block's alt-blockset flag is set - which is where these four offsets come from.",
-    "blockset": 0,
-    "alt_blockset": 4096,
-    "collision": 8192,
-    "alt_collision": 12288,
+    "_doc": "A channel's blockset bank is four $1000 regions, one file each: blockset, alt_blockset, blockset_tile_types, alt_blockset_tile_types. call_00_169f_BlockPatch_WriteTiles reaches them by setting bits of the address high byte - `set 4, B` for the alt blockset, `set 5, B` for the tile types - so the disassembly ASSERTs the four still assemble back to back in that order. The editor reads them as four named layers and needs no offsets.",
     "block_bytes": 16,
     "blocks": 256,
     "plane_stride": 256,

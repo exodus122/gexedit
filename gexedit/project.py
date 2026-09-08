@@ -424,13 +424,21 @@ class Project:
                 m = re.search(pat, body)
                 return m.group(1) if m else None
             blockmap = pick(r"BANK\((blockmap_\w+)\)")
-            bsc      = pick(r"BANK\((blockset_collision_\w+)\)")
+            bs       = pick(r"BANK\((blockset_\w+)\)")
             tileset  = pick(r"\bdw\s+(tileset_\w+)")
             altflags = pick(r"BANK\((alt_blockset_flags\w*)\)")
             altmask  = pick(r"db\s+\$00,\s*(ALT_BLOCKSET_\w+)")
+            # the record names only the first of the bank's four regions; the other
+            # three are its siblings, laid out after it by the blockset_bank macro
+            roles = [("blockmap", blockmap), ("tileset", tileset),
+                     ("alt_blockset_flags", altflags)]
+            if bs:
+                ch = bs[len("blockset_"):]
+                roles += [("blockset", bs), ("alt_blockset", "alt_blockset_" + ch),
+                          ("blockset_tile_types", "blockset_tile_types_" + ch),
+                          ("alt_blockset_tile_types", "alt_blockset_tile_types_" + ch)]
             layers = {}
-            for role, label in (("blockmap", blockmap), ("blockset_collision", bsc),
-                                ("tileset", tileset), ("alt_blockset_flags", altflags)):
+            for role, label in roles:
                 inc = self.labels.get(label) if label else None
                 if inc:
                     layers[role] = resolve(self.root, inc)

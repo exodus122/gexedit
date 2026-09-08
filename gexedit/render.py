@@ -210,16 +210,12 @@ class MapView:
             self.alt_blocks = None
             self.alt_plane = None
         else:
-            bank = info.read("blockset_collision") or b""
             spec = p["blockset_bank"]
-            size = spec["blocks"] * spec["block_bytes"]
-            cut = lambda off: bank[off:off + size]
-            self.blocks = formats.parse_blockset_planar(
-                cut(spec["blockset"]), spec["block_bytes"], spec["blocks"],
+            planar = lambda role: formats.parse_blockset_planar(
+                info.read(role) or b"", spec["block_bytes"], spec["blocks"],
                 spec["plane_stride"])
-            self.alt_blocks = formats.parse_blockset_planar(
-                cut(spec["alt_blockset"]), spec["block_bytes"], spec["blocks"],
-                spec["plane_stride"])
+            self.blocks = planar("blockset")
+            self.alt_blocks = planar("alt_blockset")
             self.alt_plane = info.read("alt_blockset_flags")
 
         if p["blockmap"] == "split16":
@@ -241,12 +237,13 @@ class MapView:
                                               self.palettes, self.cells, palette_ids,
                                               secondary=secondary)
 
-        # collision: gex3 keeps a parallel grid plus its own tiny blockset, gex2 keeps
-        # a quadrant of the same bank indexed by the very same block ids
+        # collision: gex3 keeps a parallel grid plus its own blockset keyed by its own
+        # collision block ids; gex2 keeps a tile-type plane beside the graphics in the
+        # same bank, indexed by the very same block ids
         self.coll_cells = None
         self.coll_blocks = None
         if p["collision"] == "separate":
-            raw = info.read("collision")
+            raw = info.read("collision_blockmap")
             if raw:
                 self.coll_cells = list(raw)
             cb = info.read("collision_blockset")
@@ -255,12 +252,10 @@ class MapView:
                     cb, self.cells * self.cells)
         else:
             spec = p["blockset_bank"]
-            bank = info.read("blockset_collision") or b""
-            size = spec["blocks"] * spec["block_bytes"]
             self.coll_cells = self.cells_map
             self.coll_blocks = [b.tiles for b in formats.parse_blockset_planar(
-                bank[spec["collision"]:spec["collision"] + size],
-                spec["block_bytes"], spec["blocks"], spec["plane_stride"])]
+                info.read("blockset_tile_types") or b"", spec["block_bytes"],
+                spec["blocks"], spec["plane_stride"])]
 
         # which map cells take the alternate blockset
         self.alt_mask = 0
