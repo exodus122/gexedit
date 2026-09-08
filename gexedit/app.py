@@ -139,8 +139,9 @@ class EditorWindow(ttk.Frame):
         self.show_collision = False
         self.selected_block = 0
         self.stroke = None
-        self.tool = "paint"
+        self.tool = "view"
         self.rect_from = None
+        self.press_at = None
         self.selection = None          # (role, Record)
         self.drag_from = None
         self.hover = None
@@ -152,6 +153,7 @@ class EditorWindow(ttk.Frame):
         self._build_menu()
         self._build_layout()
         self._bind_keys()
+        self._on_tool()                 # apply the starting tool's cursor and status
         self.populate_maps()
         if self.project.maps:
             self.open_map(self.project.maps[0])
@@ -193,7 +195,7 @@ class EditorWindow(ttk.Frame):
         bar = ttk.Frame(self, padding=(6, 4))
         bar.pack(side="top", fill="x")
         ttk.Label(bar, text="Tool:").pack(side="left")
-        self.tool_var = tk.StringVar(value="paint")
+        self.tool_var = tk.StringVar(value="view")
         for label, value in (("View", "view"), ("Paint", "paint"), ("Fill", "fill"),
                              ("Rect", "rect"), ("Objects", "objects")):
             ttk.Radiobutton(bar, text=label, value=value, variable=self.tool_var,
@@ -248,6 +250,8 @@ class EditorWindow(ttk.Frame):
         self.props = ttk.Frame(right, padding=(6, 0))
         self.props.pack(fill="x")
         self._prop_vars = {}
+        self._prop_widgets = {}
+        self._prop_fields = {}
         panes.add(right, weight=0)
 
         self.canvas.bind("<Configure>", self._on_configure)
@@ -408,6 +412,7 @@ class EditorWindow(ttk.Frame):
         self._draw_hover()
 
     MARKER = 5
+    CLICK_SLOP = 3          # px of travel still counted as a click, not a drag
 
     def _draw_objects(self):
         """Markers for every visible object layer, in map pixels scaled to the view.
@@ -518,6 +523,7 @@ class EditorWindow(ttk.Frame):
 
     def _on_press(self, event):
         if self.tool == "view":
+            self.press_at = (event.x, event.y)
             self._pan_start(event)
             return
         if self.tool == "objects":
@@ -559,7 +565,7 @@ class EditorWindow(ttk.Frame):
                 wx = (self.canvas.canvasx(event.x) - self.drag_from[0]) / px_scale
                 wy = (self.canvas.canvasy(event.y) - self.drag_from[1]) / px_scale
                 layer.set_world_xy(rec, wx, wy)
-                self._refresh_props()
+                self._sync_props()
                 self._draw_objects()
                 self._title()
             return
@@ -575,6 +581,15 @@ class EditorWindow(ttk.Frame):
     def _on_release(self, event):
         if self.tool == "view":
             self._pan_end()
+            # a press that did not really move is a click, and a click picks whatever
+            # object is under it - so entities and doors can be inspected without
+            # leaving the tool you navigate with
+            if self.press_at:
+                moved = max(abs(event.x - self.press_at[0]),
+                            abs(event.y - self.press_at[1]))
+                if moved <= self.CLICK_SLOP:
+                    self.select_object(self._object_at(event))
+            self.press_at = None
             return
         if self.tool == "objects":
             self.drag_from = None
@@ -752,7 +767,7 @@ class EditorWindow(ttk.Frame):
 
     def _on_tool(self):
         self.tool = self.tool_var.get()
-        if self.tool != "objects":
+        if self.tool not in ("objects", "view"):
             self.select_object(None)
         self.canvas.configure(cursor="hand2" if self.tool == "view" else "")
         if self.tool == "view":
@@ -784,15 +799,26 @@ class EditorWindow(ttk.Frame):
         self._draw_objects()
         self._status()
 
-    def _refresh_props(self):
-        """The properties panel is generated from the schema, not hand-built.
+    def _field_text(self, field, value):
+        """How one field reads in the panel: a constant when the schema names one."""
+        table = self.project.enums.get(field.get("enum"))
+        if table:
+            name = table.get(value)
+            return "$%02x  %s" % (value, name) if name else "$%02x" % value
+        return str(value)
 
-        Every field the disassembly documents gets a row, in record order, with enum
-        fields showing their constant. Nothing here lists a field by name.
+    def _refresh_props(self):
+        """Rebuild the panel. Only for a change of selection - see _sync_props.
+
+        Generated from the schema, not hand-built: every field the disassembly
+        documents gets a row, in record order, and a field with an enum gets the actual
+        constants to pick from.
         """
         for child in self.props.winfo_children():
             child.destroy()
         self._prop_vars = {}
+        self._prop_widgets = {}
+        self._prop_fields = {}
         if not self.selection:
             self.props_title.configure(text="No object selected")
             return
@@ -804,41 +830,56 @@ class EditorWindow(ttk.Frame):
         enums = self.project.enums
         for row, field in enumerate(layer.fields):
             name = field["name"]
+            self._prop_fields[name] = field
             ttk.Label(self.props, text=name).grid(row=row, column=0, sticky="w",
                                                   padx=(0, 6), pady=1)
             value = rec.get(name, 0)
-            table = enums.get(field.get("enum"))
-            var = tk.StringVar()
+            var = tk.StringVar(value=self._field_text(field, value))
             self._prop_vars[name] = var
-
+            table = enums.get(field.get("enum"))
             if table:
-                # a field the disassembly gave an enum gets the constants themselves,
-                # which beats a number the reader has to look up - and it is generated,
-                # so a constant added to the .asm shows up here with no change in here
                 choices = ["$%02x  %s" % (v, n) for v, n in sorted(table.items())]
-                var.set(table.get(value) and "$%02x  %s" % (value, table[value])
-                        or "$%02x" % value)
-                box = ttk.Combobox(self.props, textvariable=var, values=choices,
-                                   width=26, state="normal")
-                box.grid(row=row, column=1, columnspan=2, sticky="w", pady=1)
-                box.bind("<<ComboboxSelected>>", lambda e, n=name: self._commit_prop(n))
-                box.bind("<Return>", lambda e, n=name: self._commit_prop(n))
-                box.bind("<FocusOut>", lambda e, n=name: self._commit_prop(n))
-                continue
+                widget = ttk.Combobox(self.props, textvariable=var, values=choices,
+                                      width=26)
+                widget.grid(row=row, column=1, columnspan=2, sticky="w", pady=1)
+                widget.bind("<<ComboboxSelected>>",
+                            lambda e, n=name: self._commit_prop(n))
+            else:
+                widget = ttk.Entry(self.props, textvariable=var, width=8)
+                widget.grid(row=row, column=1, sticky="w", pady=1)
+                pretty = ""
+                for k, cname in (field.get("sentinels") or {}).items():
+                    if value == (int(k, 16) if str(k).lower().startswith("0x")
+                                 else int(k)):
+                        pretty = cname
+                if pretty:
+                    ttk.Label(self.props, text=pretty, foreground="#3465a4",
+                              wraplength=130, justify="left").grid(
+                        row=row, column=2, sticky="w", padx=(6, 0))
+            widget.bind("<Return>", lambda e, n=name: self._commit_prop(n))
+            widget.bind("<FocusOut>", lambda e, n=name: self._commit_prop(n))
+            self._prop_widgets[name] = widget
 
-            var.set(str(value))
-            entry = ttk.Entry(self.props, textvariable=var, width=8)
-            entry.grid(row=row, column=1, sticky="w", pady=1)
-            entry.bind("<Return>", lambda e, n=name: self._commit_prop(n))
-            entry.bind("<FocusOut>", lambda e, n=name: self._commit_prop(n))
-            pretty = ""
-            for k, cname in (field.get("sentinels") or {}).items():
-                if value == (int(k, 16) if str(k).lower().startswith("0x") else int(k)):
-                    pretty = cname
-            if pretty:
-                ttk.Label(self.props, text=pretty, foreground="#3465a4",
-                          wraplength=130, justify="left").grid(
-                    row=row, column=2, sticky="w", padx=(6, 0))
+    def _sync_props(self):
+        """Update the values in place, without touching the widgets.
+
+        Dragging an object fires many motion events a second; rebuilding the panel on
+        each one made it visibly flash. Nothing here creates or destroys a widget, and
+        the field being typed in is left alone so a sync cannot eat a keystroke.
+        """
+        if not self.selection:
+            return
+        _role, rec = self.selection
+        try:
+            focused = self.focus_get()
+        except KeyError:                       # focus on a foreign window
+            focused = None
+        for name, var in self._prop_vars.items():
+            if self._prop_widgets.get(name) is focused:
+                continue
+            text = self._field_text(self._prop_fields[name], rec.get(name, 0))
+            if var.get() != text:
+                var.set(text)
 
     def _commit_prop(self, name):
         if not self.selection:
@@ -848,12 +889,12 @@ class EditorWindow(ttk.Frame):
         try:
             value = _parse_value(raw)
         except ValueError:
-            self._refresh_props()
+            self._sync_props()
             return
         if rec.get(name) != value:
             rec[name] = value
             self.doc.objects[role].dirty = True
-            self._refresh_props()
+            self._sync_props()
             self._draw_objects()
             self._title()
             self._status()
@@ -884,7 +925,15 @@ class EditorWindow(ttk.Frame):
                 bits.append("cell %d,%d = block $%02x"
                             % (cx, cy, self.doc.view.block_at(cx, cy)))
             if self.tool == "view":
-                bits.append("drag to move the view")
+                if self.selection:
+                    role, rec = self.selection
+                    layer = self.doc.objects[role]
+                    wx, wy = layer.world_xy(rec)
+                    bits.append("%s #%d %s at %d,%d"
+                                % (role, rec.index,
+                                   layer.label(rec, self.project.enums), wx, wy))
+                else:
+                    bits.append("drag to move, click to select")
             elif self.tool == "objects":
                 if self.selection:
                     role, rec = self.selection

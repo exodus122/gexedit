@@ -36,7 +36,7 @@ cells you can see, so a 128x128 gex2 map scrolls as smoothly as a small gex3 one
 | `1`…`5`           | View · Paint · Fill · Rect · Objects |
 | wheel             | zoom, toward whatever is under the pointer |
 | middle drag       | move the view, from any tool |
-| left click / drag | move the view, paint, flood fill, drag a rectangle, or select and move an object — whichever tool is active |
+| left click / drag | in **View** (the default): click selects an entity or door, drag moves the view. Otherwise paint, flood fill, drag a rectangle, or move an object |
 | right click       | pick the block under the cursor |
 | `+` / `-`         | zoom in / out |
 | `f`               | fit the map to the window |
@@ -56,8 +56,10 @@ differently" is the thing you actually want to see.
 
 ### Objects
 
-The **Objects** tool shows entities, doors and spawn points on the map. Click one to
-select it, drag to move it, and edit any field in the panel on the right. Each layer can
+Entities, doors and spawn points are drawn on the map. Clicking one selects it in the
+View tool too, so you can inspect things without leaving the tool you navigate with; the
+**Objects** tool is what lets you drag them. Either way, every field is editable in the
+panel on the right. Each layer can
 be hidden from the toolbar, and gex2 doors draw a dashed line to where they lead.
 
 Nothing about those records is written into the editor. The panel is generated from the
