@@ -242,6 +242,71 @@ class TestGex2AltBlockset(unittest.TestCase):
         self.assertGreater(checked, 15)
 
 
+class TestDoorPairs(unittest.TestCase):
+    """gex2's two-way doors are a pair of records that reverse each other.
+
+    Moving one end has to bring the other's destination with it, or the trip back
+    silently breaks - and the editor draws a line to nowhere.
+    """
+
+    def _doors(self):
+        p = _project(GEX2)
+        info = next(m for m in p.maps if m.name == "MAP_TOON_TV_OUT_OF_TOON")
+        layers = objects.layers_for(p, info)
+        if "doors" not in layers:
+            raise unittest.SkipTest("no door layer")
+        return layers["doors"]
+
+    def test_pairing_comes_from_the_schema(self):
+        pair = self._doors().pairing
+        self.assertEqual(pair["kind"], "reverse_pairs")
+        self.assertEqual(pair["from"], ["from_x", "from_y"])
+        self.assertEqual(pair["to"], ["to_x", "to_y"])
+
+    def test_partner_follows_a_move(self):
+        layer = self._doors()
+        rec = layer.records[0]
+        partners = layer.partners(rec)
+        self.assertTrue(partners, "expected door 0 to have a reverse partner")
+        moved = layer.set_world_xy(rec, 40 * 32, 20 * 32)
+        self.assertEqual([q.index for q in moved], [q.index for q in partners])
+        here = (rec["from_x"], rec["from_y"])
+        for q in partners:
+            self.assertEqual((q["to_x"], q["to_y"]), here)
+
+    def test_partner_can_be_left_alone(self):
+        layer = self._doors()
+        rec, partner = layer.records[0], layer.records[3]
+        before = (partner["to_x"], partner["to_y"])
+        layer.set_world_xy(rec, 10 * 32, 10 * 32, sync_partners=False)
+        self.assertEqual((partner["to_x"], partner["to_y"]), before)
+
+    def test_a_one_way_door_has_no_partner(self):
+        layer = self._doors()
+        oneway = [r for r in layer.records if not layer.partners(r)]
+        self.assertTrue(oneway, "expected at least one one-way door")
+        for r in oneway:
+            self.assertEqual(layer.set_world_xy(r, 32, 32), [])
+
+    def test_repeated_moves_keep_tracking(self):
+        """A drag is many small moves; the partner must follow every one."""
+        layer = self._doors()
+        rec = layer.records[0]
+        for step in range(5):
+            layer.set_world_xy(rec, (10 + step) * 32, (10 + step) * 32)
+        here = (rec["from_x"], rec["from_y"])
+        self.assertEqual([(q["to_x"], q["to_y"]) for q in layer.records
+                          if q.index == 3], [here])
+
+    def test_entities_are_unaffected(self):
+        """Only records the schema declares reversible get this treatment."""
+        p = _project(GEX2)
+        info = next(m for m in p.maps if m.name == "MAP_TOON_TV_OUT_OF_TOON")
+        ents = objects.layers_for(p, info)["entity_list"]
+        self.assertIsNone(ents.pairing)
+        self.assertEqual(ents.set_world_xy(ents.records[0], 64, 64), [])
+
+
 class TestLayerResolution(unittest.TestCase):
     def test_generated_asm_resolves_to_its_bin(self):
         """gex3 INCLUDEs generated .asm for its entity lists; the bytes are the .bin."""

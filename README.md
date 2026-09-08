@@ -75,6 +75,13 @@ record — the editor shows only the records belonging to the map you are editin
 that is declared in the schema's `editor` block, which is the one editor-specific thing
 added to a disassembly and is inert to its build.
 
+gex2's two-way doors are a *pair* of one-directional records that reverse each other, so
+moving one end also repoints anything aimed at where it was. Without that, dragging a
+door leaves a line to nowhere on screen and, worse, silently breaks the trip back. The
+pairing is not hardcoded — it reuses the `annotate` block the disassembly already carries
+for generating the "<-> #n" / "one-way" notes. One-way doors have no partner and move
+alone, and **View → Keep door pairs linked** turns the behaviour off.
+
 Saving rewrites only the records that changed; the rest of the file is byte-identical.
 
 Which game a repo is gets detected from the map table its source contains, so there is

@@ -92,11 +92,47 @@ class ObjectLayer:
         s = self._scale()
         return rec[self.editor["x"]] * s, rec[self.editor["y"]] * s
 
-    def set_world_xy(self, rec, px, py):
+    def set_world_xy(self, rec, px, py, sync_partners=True):
+        """Move one record, and by default bring its reverse partners with it.
+
+        gex2 doors are one-directional, and a two-way door is a pair of records that
+        are each other's exact reverse. Moving one end without the other does not just
+        leave a stale line on screen - it silently breaks the trip back, which is the
+        kind of edit you would not notice until you played it. Records that pointed at
+        this one's old position are repointed at its new one.
+
+        Returns the partner records it changed, so the caller can say so.
+        """
         s = self._scale()
+        moved = []
+        if sync_partners:
+            moved = self.partners(rec)
         rec[self.editor["x"]] = max(0, int(px) // s)
         rec[self.editor["y"]] = max(0, int(py) // s)
+        here = (rec[self.editor["x"]], rec[self.editor["y"]])
+        for q in moved:
+            q[self.pairing["to"][0]], q[self.pairing["to"][1]] = here
         self.dirty = True
+        return moved
+
+    @property
+    def pairing(self):
+        """The from/to field pair, when the schema declares these records reversible.
+
+        Reuses the `annotate` block the disassembly already carries for generating the
+        "<-> #n" / "one-way" notes, rather than teaching the editor about doors.
+        """
+        ann = self.asset.get("annotate") or {}
+        return ann if ann.get("kind") == "reverse_pairs" else None
+
+    def partners(self, rec):
+        """Records whose destination is this record's current source."""
+        pair = self.pairing
+        if not pair:
+            return []
+        here = tuple(rec[f] for f in pair["from"])
+        return [q for q in self.records
+                if q is not rec and tuple(q[f] for f in pair["to"]) == here]
 
     def link_xy(self, rec):
         """Some records point somewhere else - gex2 doors carry their destination."""

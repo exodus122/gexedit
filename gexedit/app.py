@@ -137,6 +137,8 @@ class EditorWindow(ttk.Frame):
         self.zoom_index = ZOOMS.index(1)
         self.show_grid = False
         self.show_collision = False
+        self.link_pairs = True
+        self.partner_note = ""
         self.selected_block = 0
         self.stroke = None
         self.tool = "view"
@@ -179,6 +181,9 @@ class EditorWindow(ttk.Frame):
         m.add_command(label="Zoom out", command=lambda: self.zoom(-1), accelerator="-")
         m.add_checkbutton(label="Grid", command=self.toggle_grid)
         m.add_checkbutton(label="Collision", command=self.toggle_collision)
+        self.link_var = tk.BooleanVar(value=True)
+        m.add_checkbutton(label="Keep door pairs linked", variable=self.link_var,
+                          command=self._on_link_toggle)
         m.add_separator()
         m.add_command(label="Fit map to window", command=self.fit)
         bar.add_cascade(label="View", menu=m)
@@ -564,10 +569,14 @@ class EditorWindow(ttk.Frame):
                 px_scale = self.px_scale
                 wx = (self.canvas.canvasx(event.x) - self.drag_from[0]) / px_scale
                 wy = (self.canvas.canvasy(event.y) - self.drag_from[1]) / px_scale
-                layer.set_world_xy(rec, wx, wy)
+                moved = layer.set_world_xy(rec, wx, wy,
+                                           sync_partners=self.link_pairs)
+                self.partner_note = ("+#%s" % ",".join(str(q.index) for q in moved)
+                                     if moved else "")
                 self._sync_props()
                 self._draw_objects()
                 self._title()
+                self._status()
             return
         cell = self._cell_at(event)
         self._set_hover(cell)
@@ -702,6 +711,10 @@ class EditorWindow(ttk.Frame):
         self.show_grid = not self.show_grid
         self.redraw()
 
+    def _on_link_toggle(self):
+        self.link_pairs = self.link_var.get()
+        self._status()
+
     def toggle_collision(self):
         self.show_collision = not self.show_collision
         self.redraw()
@@ -795,6 +808,7 @@ class EditorWindow(ttk.Frame):
 
     def select_object(self, hit):
         self.selection = hit
+        self.partner_note = ""
         self._refresh_props()
         self._draw_objects()
         self._status()
@@ -939,9 +953,12 @@ class EditorWindow(ttk.Frame):
                     role, rec = self.selection
                     layer = self.doc.objects[role]
                     wx, wy = layer.world_xy(rec)
-                    bits.append("%s #%d %s at %d,%d"
+                    note = ""
+                    if self.partner_note:
+                        note = "  (partner %s moved with it)" % self.partner_note
+                    bits.append("%s #%d %s at %d,%d%s"
                                 % (role, rec.index,
-                                   layer.label(rec, self.project.enums), wx, wy))
+                                   layer.label(rec, self.project.enums), wx, wy, note))
                 else:
                     bits.append("click an object")
             else:
