@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gexedit"
+version = "0.1.0"
+description = "Map editor for the Gex Game Boy Color disassemblies"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["Pillow>=9", "numpy>=1.20"]
+
+[project.scripts]
+gexedit = "gexedit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gexedit*"]
+
+[tool.setuptools.package-data]
+gexedit = ["profiles/*.json"]

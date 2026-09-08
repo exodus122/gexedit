@@ -1,0 +1,26 @@
+{
+  "game": "gex2",
+  "title": "Gex: Enter the Gecko (GBC)",
+  "_doc": "How this repo lays out its map data. The editor reads this rather than guessing, which is what lets one editor serve both games. gex2 differs from gex3 in every structural choice: a block is 4x4 tiles rather than 2x2, block ids are 8-bit so a blockmap is one flat byte plane, collision shares the blockset's bank rather than living in its own file, and a tile's palette comes from a per-channel table indexed by tile id rather than from a per-cell attribute byte.",
+  "block_tiles": 4,
+  "blockmap": "flat8",
+  "blockset": "planar_quadrants",
+  "collision": "in_blockset_bank",
+  "palette_source": "per_channel_tile_ids",
+  "geometry": { "width": 128, "height": 128 },
+  "blockset_bank": {
+    "_doc": "The 16 KiB blockset_collision bank is four quadrants. call_00_169f_BlockPatch_WriteTiles reaches the tile half at $40xx-$4Fxx and the collision half at $60xx-$6Fxx, and takes the $50xx page instead of $40xx when a block's alt-blockset flag is set - which is where these four offsets come from.",
+    "blockset": 0,
+    "alt_blockset": 4096,
+    "collision": 8192,
+    "alt_collision": 12288,
+    "block_bytes": 16,
+    "blocks": 256,
+    "plane_stride": 256,
+    "_planar": "Cell k of block b is at b + k * plane_stride, not at b * block_bytes + k - see parse_blockset_planar."
+  },
+  "manifest": {
+    "kind": "gex2_mapdata",
+    "source": "src/code/bank00_map_init_data.asm"
+  }
+}

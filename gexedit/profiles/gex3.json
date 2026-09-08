@@ -1,0 +1,16 @@
+{
+  "game": "gex3",
+  "title": "Gex 3: Deep Cover Gecko (GBC)",
+  "_doc": "How this repo lays out its map data. The editor reads this rather than guessing, which is what lets one editor serve both games.",
+  "block_tiles": 2,
+  "blockmap": "split16",
+  "blockset": "attr",
+  "collision": "separate",
+  "palette_source": "per_map",
+  "manifest": {
+    "kind": "gex3_mapdata",
+    "source": "src/code/bank03_map_init_data.asm",
+    "layers": ["map", "map_extended", "tileset", "blockset", "collision",
+               "collision_blockset", "palette", "entity_list", "collectible_list"]
+  }
+}
