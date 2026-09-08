@@ -21,6 +21,11 @@
   },
   "manifest": {
     "kind": "gex2_mapdata",
-    "source": "src/code/bank00_map_init_data.asm"
+    "source": "src/code/bank00_map_init_data.asm",
+    "palette_table": {
+      "_doc": "The BG palette is per LEVEL, not per channel - the bonus Kung Fu Theater level takes palette_kung_fu_theater2 while the rest of its channel does not. Named explicitly because bank03_hud_tiles.asm also holds a run of dw .palette_* entries, for the collectible sprites.",
+      "source": "src/code/bank0B_palettes.asm",
+      "label": "data_0b_5665_LevelBgPalettePointerTable"
+    }
   }
 }

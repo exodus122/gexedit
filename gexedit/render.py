@@ -8,6 +8,9 @@ No GUI imports: this module can render to a PNG from a script, which is how it g
 tested without a screen.
 """
 
+import os
+import re
+
 import numpy as np
 from PIL import Image
 
@@ -43,12 +46,97 @@ class Tileset:
         return lut[self.shades[index]]
 
 
+class SecondaryTilesets:
+    """gex2's per-channel secondary tilesets, and which block uses which.
+
+    A block in the ALT blockset can draw its low tile ids from one of these 36-tile sets
+    instead of the map's own tileset. secondary_tileset_for_block_<channel>.bin says
+    which: byte 0 is the first block id the table covers, and the bytes after it are one
+    selector per block from there to $FF. A selector of 0 means "no substitution", and
+    otherwise selector - 1 indexes the tilesets. Only tile ids below TILE_LIMIT are
+    substituted; anything above still comes from the map's tileset.
+
+    Each secondary tileset carries its own palette-id table, so a substituted tile also
+    takes its colours from there rather than from the channel's palette_ids.
+    """
+
+    TILE_LIMIT = 0x24            # a secondary tileset is 6x6 tiles
+
+    def __init__(self, table, folder, palette_count=8):
+        self.palette_count = palette_count
+        self.start = table[0] if table else 0x100
+        self.selectors = table[1:] if table else b""
+        self.sets = {}
+        if not folder or not os.path.isdir(folder):
+            return
+        pal_dir = os.path.join(folder, "palette_ids")
+        # The selector indexes these sets by POSITION in sorted filename order, not by
+        # the number in the file name - circuit_central's run from image_00d_11 to _17
+        # while its selectors are 1..6. A .png with no palette-id table beside it is
+        # unusable and is skipped rather than occupying a slot, which is what keeps the
+        # positions lined up.
+        index = 0
+        for name in sorted(os.listdir(folder)):
+            if not name.lower().endswith(".png"):
+                continue
+            stem = os.path.splitext(name)[0]
+            pal = os.path.join(pal_dir, stem + "_palette_ids.bin")
+            if not os.path.exists(pal):
+                continue
+            with open(pal, "rb") as f:
+                ids = f.read()
+            self.sets[index] = (Tileset(os.path.join(folder, name)), ids,
+                                self._television(folder, stem))
+            index += 1
+
+    @staticmethod
+    def _television(folder, stem):
+        """The Media Dimension TVs show other channels, in other channels' colours.
+
+        A screen tileset is named ..._<channel>_screen, and beside it is a 16-byte
+        <channel>_television_palette.bin - two palettes, which stand in for the LAST two
+        of the map's own eight while those tiles are drawn. That is exactly what the
+        screen tilesets' palette ids say: they use only 6 and 7, and each screen uses
+        whichever of the two its channel needs.
+        """
+        if not stem.endswith("_screen"):
+            return None
+        # image_013_14_prehistory_channel_screen -> prehistory_channel
+        m = re.match(r"^image_[0-9a-fA-F]+_\d+_(.+)$", stem[:-len("_screen")])
+        if not m:
+            return None
+        channel = m.group(1)
+        path = os.path.join(folder, "palettes", channel + "_television_palette.bin")
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            return formats.parse_palettes(f.read())
+
+    def palette_for(self, sub, pal_id, default):
+        """The palette a substituted tile takes: a television one when it has them."""
+        tv = sub[2]
+        if not tv:
+            return default
+        offset = max(0, self.palette_count - len(tv))
+        return tv[min(len(tv) - 1, max(0, pal_id - offset))]
+
+    def for_block(self, block_id):
+        """(tileset, palette_ids, television_palettes) for this block, or None."""
+        i = block_id - self.start
+        if i < 0 or i >= len(self.selectors):
+            return None
+        sel = self.selectors[i]
+        return self.sets.get(sel - 1) if sel else None
+
+
 class BlockRenderer:
     """Caches one RGB image per block id, since a map reuses a few hundred blocks
     thousands of times. This is the cache the HTML editor calls blockImageCache."""
 
-    def __init__(self, tileset, blocks, palettes, cells_per_side, palette_ids=None):
+    def __init__(self, tileset, blocks, palettes, cells_per_side, palette_ids=None,
+                 secondary=None):
         self.tileset = tileset
+        self.secondary = secondary
         self.blocks = blocks
         self.palettes = palettes or [[(0, 0, 0)] * 4]
         self.n = cells_per_side
@@ -63,12 +151,19 @@ class BlockRenderer:
         out = np.zeros((self.px, self.px, 3), dtype=np.uint8)
         if 0 <= block_id < len(self.blocks):
             blk = self.blocks[block_id]
+            sub = self.secondary.for_block(block_id) if self.secondary else None
             for cell in range(self.n * self.n):
                 if cell >= len(blk.tiles):
                     break
-                pal_id = blk.palette_of(cell, self.palette_ids)
+                tile_id = blk.tiles[cell]
+                tileset, ids, substituted = self.tileset, self.palette_ids, False
+                if sub and tile_id < SecondaryTilesets.TILE_LIMIT:
+                    tileset, ids, substituted = sub[0], sub[1], True
+                pal_id = blk.palette_of(cell, ids)
                 pal = self.palettes[pal_id % len(self.palettes)]
-                tile = self.tileset.tile_rgb(blk.tiles[cell], pal)
+                if substituted:
+                    pal = self.secondary.palette_for(sub, pal_id, pal)
+                tile = tileset.tile_rgb(tile_id, pal)
                 fx, fy = blk.flips(cell)
                 if fx:
                     tile = tile[:, ::-1]
@@ -139,8 +234,12 @@ class MapView:
                                       self.cells, palette_ids)
         self.alt_renderer = None
         if self.alt_blocks is not None:
+            table = info.read("secondary_tileset_for_block") or b""
+            secondary = SecondaryTilesets(table, info.layers.get("secondary_tilesets"),
+                                          max(1, len(self.palettes)))
             self.alt_renderer = BlockRenderer(self.tileset, self.alt_blocks,
-                                              self.palettes, self.cells, palette_ids)
+                                              self.palettes, self.cells, palette_ids,
+                                              secondary=secondary)
 
         # collision: gex3 keeps a parallel grid plus its own tiny blockset, gex2 keeps
         # a quadrant of the same bank indexed by the very same block ids

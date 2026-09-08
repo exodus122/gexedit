@@ -291,6 +291,38 @@ class Project:
             maps.append(MapInfo(ident, mapname, level, w, h, layers))
         return maps
 
+    def _labelled_table(self, spec, index):
+        """Entry `index` of one named `dw` pointer table, resolved to a file.
+
+        Used where guessing would go wrong: gex2 has several `dw .palette_*` tables and
+        the one that matters is the level BG table in bank0B, not the collectible
+        palettes in bank03 - so the profile names the label rather than the editor
+        pattern-matching for it.
+        """
+        if not spec:
+            return None
+        path = self._src(spec["source"])
+        if not os.path.exists(path):
+            return None
+        with open(path, errors="replace") as f:
+            lines = f.read().splitlines()
+        labels, seen = [], False
+        for ln in lines:
+            if not seen:
+                if re.match(r"^\.?%s:" % re.escape(spec["label"]), ln):
+                    seen = True
+                continue
+            m = re.match(r"\s+dw\s+\.?([A-Za-z_]\w*)", ln)
+            if m:
+                labels.append(m.group(1))
+                continue
+            if ln.strip() and not ln.startswith((" ", "\t", ";")):
+                break
+        if index >= len(labels):
+            return None
+        inc = self.labels.get(labels[index])
+        return resolve(self.root, inc) if inc else None
+
     def _table_asset(self, role, index):
         table = self._pointer_tables().get(role)
         if not table or index >= len(table):
@@ -398,6 +430,22 @@ class Project:
                     if os.path.exists(p):
                         layers[role] = p
                 layers.setdefault("channel", channel)
+                # the alt blockset draws some of its tiles from a per-channel set of
+                # small secondary tilesets, chosen per block
+                sec = self._src("src/data/maps/%s/secondary_tileset_for_block_%s.bin"
+                                % (channel, channel))
+                if os.path.exists(sec):
+                    layers["secondary_tileset_for_block"] = sec
+                folder = self._src("src/gfx/secondary_tilesets/%s" % channel)
+                if os.path.isdir(folder):
+                    layers["secondary_tilesets"] = folder
+            # The BG palette is NOT the channel's: .data_0b_5665_LevelBgPalettePointerTable
+            # picks one per level, and the bonus Kung Fu Theater level takes a different
+            # one from the rest of its channel. Read the table rather than assume.
+            pal = self._labelled_table(man.get("palette_table"), ident)
+            if pal:
+                layers["palette"] = pal
+
             # gex2's object lists are per level and named after the level, not the
             # channel, and nothing in the MapData record points at them - so find them
             # by the label the code INCLUDEs, which is keyed on the level name

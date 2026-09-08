@@ -112,6 +112,26 @@ Doors, spawns, entities and the rest are described by each disassembly's own
 annotated `.asm` those repos assemble. The editor reads it rather than keeping a second
 definition of every record, so a field named there is a field the editor understands.
 
+## gex2's alt blockset
+
+Every gex2 map cell carries a flag saying whether it takes the primary blockset or the
+alternate one, and an alt block does not simply use the map's tileset: tile ids below
+$24 come from one of a handful of 36-tile *secondary* tilesets, chosen per block by
+`secondary_tileset_for_block_<channel>.bin`. Byte 0 of that file is the first block id
+it covers and the bytes after it are one selector per block; 0 means no substitution,
+otherwise selector - 1 picks a tileset **by position in sorted filename order** - the
+numbers in those filenames are not the selector.
+
+Each secondary tileset brings its own palette-id table. The Media Dimension screens go
+further: a screen named `..._<channel>_screen` has a 16-byte
+`<channel>_television_palette.bin` beside it holding two palettes, which stand in for
+the last two of the map's own eight. That is exactly what those tilesets' palette ids
+say - they use only 6 and 7.
+
+The map's palette is per LEVEL, read from `.data_0b_5665_LevelBgPalettePointerTable`,
+not per channel: the bonus Kung Fu Theater level uses a different one from the rest of
+its channel.
+
 ## Colour
 
 Palettes are 15-bit BGR555. Channels expand to 8-bit by bit replication,

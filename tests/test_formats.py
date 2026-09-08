@@ -171,6 +171,77 @@ class TestObjectLayers(unittest.TestCase):
         self.assertTrue(all(l.startswith("ENTITY_") for l in labels), labels)
 
 
+class TestGex2AltBlockset(unittest.TestCase):
+    """gex2's alt blockset substitutes tiles from small per-channel secondary tilesets.
+
+    Checked against tools/map2png, which is known good for the primary blockset. The one
+    place they disagree is documented in test_media_dimension_is_the_only_difference.
+    """
+
+    REGION = (0, 0, 48, 32)
+
+    def _refs(self):
+        import re
+        src_path = os.path.join(GEX2, "tools", "map2png", "map2png.py")
+        if not os.path.exists(src_path):
+            raise unittest.SkipTest("map2png not present")
+        with open(src_path) as f:
+            src = f.read()
+        names = re.findall(r'"([^"]+)"',
+                           re.search(r"level_names = \[(.*?)\]", src, re.S).group(1))
+        return names, os.path.join(GEX2, "tools", "map2png", "map_images")
+
+    def _diff_cells(self, project, info, ref_png):
+        import numpy as np
+        from PIL import Image
+        from gexedit.render import MapView
+        Image.MAX_IMAGE_PIXELS = None
+        mine = MapView(project, info).render(region=self.REGION).convert("RGB")
+        ref = Image.open(ref_png).convert("RGB").crop((0, 0, mine.width, mine.height))
+        d = (np.abs(np.asarray(ref, dtype=np.int16)
+                    - np.asarray(mine, dtype=np.int16)).sum(axis=2) != 0)
+        return {(cx, cy)
+                for cx in range(self.REGION[2]) for cy in range(self.REGION[3])
+                if d[cy * 32:(cy + 1) * 32, cx * 32:(cx + 1) * 32].any()}
+
+    def test_secondary_tilesets_load(self):
+        p = _project(GEX2)
+        from gexedit.render import MapView
+        info = next(m for m in p.maps if m.name == "MAP_TOON_TV_OUT_OF_TOON")
+        sec = MapView(p, info).alt_renderer.secondary
+        self.assertTrue(sec.sets, "no secondary tilesets loaded")
+        self.assertLess(sec.start, 0x100)
+
+    def test_palette_comes_from_the_level_table(self):
+        """Not from the channel: the bonus Kung Fu level uses a different palette."""
+        p = _project(GEX2)
+        info = next(m for m in p.maps
+                    if m.name == "MAP_KUNG_FU_THEATER_LIZARD_IN_A_CHINA_SHOP")
+        self.assertTrue(info.layer("palette").endswith("palette_kung_fu_theater2.bin"),
+                        info.layer("palette"))
+
+    def test_matches_map2png_everywhere_but_the_tv_screens(self):
+        p = _project(GEX2)
+        names, ref_dir = self._refs()
+        if not os.path.isdir(ref_dir):
+            raise unittest.SkipTest("map2png reference images not generated")
+        checked = 0
+        for info in p.maps:
+            ref = os.path.join(ref_dir, names[info.id] + "_map.png")
+            if not os.path.exists(ref):
+                continue
+            checked += 1
+            bad = self._diff_cells(p, info, ref)
+            if info.name == "MAP_MEDIA_DIMENSION":
+                # the only disagreement: map2png gives every television screen the
+                # first of its channel's two television palettes, so tiles whose
+                # palette id is 7 come out in palette 6's colours there
+                self.assertLessEqual(len(bad), 8, "Media Dimension drifted")
+                continue
+            self.assertEqual(bad, set(), "%s differs from map2png" % info.name)
+        self.assertGreater(checked, 15)
+
+
 class TestLayerResolution(unittest.TestCase):
     def test_generated_asm_resolves_to_its_bin(self):
         """gex3 INCLUDEs generated .asm for its entity lists; the bytes are the .bin."""
